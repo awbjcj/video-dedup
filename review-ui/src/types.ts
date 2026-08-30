@@ -10,6 +10,7 @@ export type VideoFile = {
   codec: string
   coveredPercent: number
   videoUrl: string
+  previewMode: 'direct' | 'transcoded'
 }
 
 export type DuplicateGroup = {

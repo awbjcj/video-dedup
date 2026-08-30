@@ -38,24 +38,35 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Iterator, Sequence
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 FRAME_WIDTH = 9
 FRAME_HEIGHT = 8
 FRAME_BYTES = FRAME_WIDTH * FRAME_HEIGHT
 DEFAULT_EXTENSIONS = {
     ".3gp",
+    ".asf",
     ".avi",
+    ".divx",
     ".flv",
+    ".m1v",
     ".m2ts",
+    ".m2v",
+    ".m4peg",
+    ".mpe",
     ".m4v",
     ".mkv",
     ".mov",
+    ".mp2",
     ".mp4",
+    ".mp4v",
     ".mpeg",
+    ".mpeg4",
     ".mpg",
+    ".mpv",
     ".mts",
     ".ogv",
     ".ts",
+    ".vob",
     ".webm",
     ".wmv",
 }
@@ -73,6 +84,17 @@ REVIEW_STRATEGIES = (
     "delete-numbered-name",
     "delete-fully-covered",
 )
+
+# Containers and video codecs that current desktop browsers can generally play
+# without conversion. Everything else is converted to a fragmented MP4 preview
+# as it is requested, so review does not require a pre-transcoding pass.
+BROWSER_NATIVE_VIDEO_CODECS = {
+    ".mp4": {"av1", "h264", "hevc", "vp9"},
+    ".m4v": {"av1", "h264", "hevc", "vp9"},
+    ".mov": {"av1", "h264", "hevc", "vp9"},
+    ".ogv": {"theora"},
+    ".webm": {"av1", "vp8", "vp9"},
+}
 
 
 class DedupError(RuntimeError):
@@ -1804,6 +1826,12 @@ def build_review_actions(
     return actions
 
 
+def browser_can_play_source(path: Path, codec: object) -> bool:
+    """Return whether the review UI can safely serve a source without conversion."""
+    native_codecs = BROWSER_NATIVE_VIDEO_CODECS.get(path.suffix.lower())
+    return native_codecs is not None and str(codec).lower() in native_codecs
+
+
 @dataclass
 class WebReviewState:
     report_path: Path
@@ -1842,6 +1870,7 @@ class WebReviewState:
                     self.interval,
                 )
                 path = Path(str(item["path"]))
+                direct_preview = browser_can_play_source(path, item.get("codec"))
                 file_payloads.append(
                     {
                         "id": file_id,
@@ -1854,7 +1883,12 @@ class WebReviewState:
                         "height": int(item.get("height") or 0),
                         "codec": str(item.get("codec") or "unknown"),
                         "coveredPercent": round(coverage, 2),
-                        "videoUrl": f"/api/video/{file_id}",
+                        "videoUrl": (
+                            f"/api/video/{file_id}"
+                            if direct_preview
+                            else f"/api/preview/{file_id}"
+                        ),
+                        "previewMode": "direct" if direct_preview else "transcoded",
                     }
                 )
             self.group_payloads.append(
@@ -2130,6 +2164,110 @@ def make_web_review_handler(
             except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                 return
 
+        def _serve_compatibility_preview(self, path_value: str) -> None:
+            try:
+                file_id = int(path_value.rsplit("/", 1)[-1])
+                item = state.files[file_id]
+            except (KeyError, ValueError):
+                self._send_error_json(404, "Unknown video.")
+                return
+            video_path = Path(str(item["path"]))
+            if not video_path.is_file():
+                self._send_error_json(404, "Video file is no longer available.")
+                return
+            ffmpeg = shutil.which("ffmpeg")
+            if not ffmpeg:
+                self._send_error_json(503, "FFmpeg is required for this preview format.")
+                return
+
+            # A fragmented MP4 can be consumed while FFmpeg is still converting
+            # it. AAC plus H.264/yuv420p provides a conservative browser target,
+            # including for MPEG program streams, AVI, MKV, and legacy codecs.
+            command = [
+                ffmpeg,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                str(video_path),
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a:0?",
+                "-sn",
+                "-dn",
+                "-map_metadata",
+                "-1",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-tune",
+                "zerolatency",
+                "-pix_fmt",
+                "yuv420p",
+                "-force_key_frames",
+                "expr:gte(t,n_forced*2)",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "128k",
+                "-movflags",
+                "+frag_keyframe+empty_moov+default_base_moof",
+                "-f",
+                "mp4",
+                "pipe:1",
+            ]
+            if self.command == "HEAD":
+                self.send_response(200)
+                self.send_header("Content-Type", "video/mp4")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                return
+            try:
+                process = subprocess.Popen(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    bufsize=0,
+                    creationflags=(
+                        subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+                    ),
+                )
+            except OSError as exc:
+                self._send_error_json(500, f"Could not start compatibility preview: {exc}")
+                return
+
+            self.send_response(200)
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Disposition", "inline")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            disconnected = False
+            try:
+                assert process.stdout is not None
+                while True:
+                    chunk = process.stdout.read(256 * 1024)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                disconnected = True
+            finally:
+                if process.stdout is not None:
+                    process.stdout.close()
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+                elif process.returncode and not disconnected:
+                    log(f"Web review: FFmpeg preview failed for {video_path}")
+
         def do_HEAD(self) -> None:
             self.do_GET()
 
@@ -2145,6 +2283,8 @@ def make_web_review_handler(
                 self._send_json(state.session_payload())
             elif path_value.startswith("/api/video/"):
                 self._serve_video(path_value)
+            elif path_value.startswith("/api/preview/"):
+                self._serve_compatibility_preview(path_value)
             else:
                 self._send_error_json(404, "Not found.")
 

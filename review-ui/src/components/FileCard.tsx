@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Check, Copy, FileWarning, ShieldCheck, Trash2 } from 'lucide-react'
+import { Check, Copy, FileWarning, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -43,7 +43,20 @@ export function FileCard({
         {videoFailed ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-6 text-center text-sm text-slate-400">
             <FileWarning className="h-7 w-7 text-amber-400" />
-            Preview unavailable. The source file may have moved or the browser may not support its codec.
+            <span>
+              {file.previewMode === 'transcoded'
+                ? 'Live compatibility preview failed. Confirm FFmpeg can decode this file.'
+                : 'Preview unavailable. The source file may have moved or the browser may not support its codec.'}
+            </span>
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              className="mt-1"
+              onClick={() => setVideoFailed(false)}
+            >
+              <RefreshCw className="mr-1.5 h-3.5 w-3.5" /> Retry preview
+            </Button>
           </div>
         ) : (
           <video
@@ -64,6 +77,11 @@ export function FileCard({
         >
           {kept ? 'Keep' : 'Quarantine'}
         </div>
+        {file.previewMode === 'transcoded' ? (
+          <div className="pointer-events-none absolute right-2 top-2 rounded-sm bg-slate-800/90 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-100 shadow-sm">
+            Live transcode
+          </div>
+        ) : null}
       </div>
 
       <div className="p-4">

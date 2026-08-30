@@ -21,6 +21,19 @@ python .\video_dedup.py doctor
 
 ## Typical workflow
 
+For one-command startup with the default `video-dedup-report.json` and
+`video-dedup-plan.json` paths:
+
+```powershell
+make start
+```
+
+Override any startup path or port when needed:
+
+```powershell
+make start REPORT=duplicates.json PLAN=decisions.json PORT=0
+```
+
 Scan two roots, including three subfolder levels:
 
 ```powershell

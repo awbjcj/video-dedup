@@ -105,6 +105,19 @@ class FingerprintTests(unittest.TestCase):
             self.assertEqual([path.name for path in depth_zero], ["root.mp4"])
             self.assertEqual({path.name for path in depth_one}, {"root.mp4", "one.mp4"})
 
+    def test_browser_preview_mode_covers_mpeg_family_and_native_sources(self) -> None:
+        self.assertTrue(vd.browser_can_play_source(Path("clip.mp4"), "h264"))
+        self.assertTrue(vd.browser_can_play_source(Path("clip.webm"), "vp9"))
+        self.assertFalse(vd.browser_can_play_source(Path("clip.mp4"), "mpeg4"))
+        self.assertFalse(vd.browser_can_play_source(Path("clip.mpeg"), "mpeg2video"))
+        self.assertTrue(
+            {
+                ".asf", ".divx", ".m1v", ".m2v", ".m4peg", ".mpe", ".mp2",
+                ".mp4v", ".mpeg", ".mpeg4", ".mpg", ".mpv", ".vob",
+            }
+            <= vd.DEFAULT_EXTENSIONS
+        )
+
     def test_exact_duplicate_coverage_is_transitive(self) -> None:
         files = {
             index: {"duration_seconds": 5.0, "detailed_sample_count": None}
@@ -405,6 +418,9 @@ class FingerprintTests(unittest.TestCase):
                 session_payload = json.loads(session_response.read())
                 self.assertEqual(session_response.status, 200)
                 self.assertEqual(session_payload["summary"]["groupCount"], 3)
+                first_file = session_payload["groups"][0]["files"][0]
+                self.assertEqual(first_file["previewMode"], "transcoded")
+                self.assertEqual(first_file["videoUrl"], "/api/preview/0")
 
                 connection.request("GET", "/api/video/0", headers={"Range": "bytes=1-4"})
                 video_response = connection.getresponse()
@@ -555,6 +571,55 @@ class EndToEndVideoTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
+
+    def test_mpeg_source_streams_as_fragmented_mp4_preview(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            folder = Path(raw)
+            source = folder / "legacy.mpeg"
+            self.ffmpeg(
+                "-f", "lavfi", "-i", "testsrc2=size=96x54:rate=8:duration=1",
+                "-c:v", "mpeg2video", "-f", "mpeg", "-y", str(source),
+            )
+            files = {
+                0: {
+                    "id": 0,
+                    "path": str(source),
+                    "size_bytes": source.stat().st_size,
+                    "mtime_ns": source.stat().st_mtime_ns,
+                    "duration_seconds": 1,
+                    "width": 96,
+                    "height": 54,
+                    "codec": "mpeg2video",
+                    "detailed_sample_count": None,
+                }
+            }
+            state = vd.WebReviewState(
+                folder / "report.json", folder / "plan.json", files, [], [[0]],
+                1.0, [str(folder)], 95.0,
+            )
+            server = vd.http.server.ThreadingHTTPServer(
+                ("127.0.0.1", 0), vd.make_web_review_handler(state, b"<html></html>"),
+            )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            connection = http.client.HTTPConnection(
+                "127.0.0.1", server.server_address[1], timeout=15,
+            )
+            try:
+                connection.request("GET", "/api/preview/0")
+                response = connection.getresponse()
+                body = response.read()
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.getheader("Content-Type"), "video/mp4")
+                self.assertIn(b"ftyp", body[:64])
+                self.assertIn(b"moov", body)
+                self.assertIn(b"moof", body)
+                self.assertIn(b"mdat", body)
+            finally:
+                connection.close()
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
 
     def test_reencode_and_two_part_compilation(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

@@ -1,9 +1,10 @@
 # Video Dedup Review UI
 
 React 18 + TypeScript frontend for the local `video-dedup web-review` server.
-The browser loads duplicate sets from `/api/session`, streams report-listed
-videos from `/api/video/:id`, requests coverage-safe recommendations, and saves
-plans through `/api/plan`.
+The browser loads duplicate sets from `/api/session`, streams browser-native
+videos from `/api/video/:id`, and live-transcodes formats such as MPEG, AVI,
+MKV, and legacy MPEG-4 to fragmented MP4 through `/api/preview/:id`. It also
+requests coverage-safe recommendations and saves plans through `/api/plan`.
 
 ```powershell
 pnpm install
