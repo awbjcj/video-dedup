@@ -1,0 +1,12 @@
+.video-dedup-cache.sqlite3
+.video-dedup-cache.sqlite3-shm
+.video-dedup-cache.sqlite3-wal
+video-dedup-report.json
+video-dedup-plan.json
+video-dedup-plan.result.json
+video-dedup-recommendations.json
+video-dedup-*-recommendations.json
+video-dedup-quarantine-*/
+__pycache__/
+.pytest_cache/
+.tmp-*/

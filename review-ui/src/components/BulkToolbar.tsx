@@ -1,0 +1,79 @@
+import { RotateCcw, ShieldCheck, Sparkles } from 'lucide-react'
+
+import { Button } from '@/components/ui/button'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import type { Strategy } from '@/types'
+
+const strategyLabels: Record<Strategy, string> = {
+  'delete-shallower': 'Prefer deeper folders',
+  'delete-shorter-name': 'Prefer descriptive names',
+  'delete-numbered-name': 'Prefer clean names',
+  'delete-fully-covered': 'Prefer covering videos',
+}
+type BulkToolbarProps = {
+  selectedCount: number
+  strategy: Strategy
+  busy: boolean
+  onStrategyChange: (strategy: Strategy) => void
+  onApplyStrategy: () => void
+  onKeepAll: () => void
+  onClear: () => void
+}
+
+export function BulkToolbar({
+  selectedCount,
+  strategy,
+  busy,
+  onStrategyChange,
+  onApplyStrategy,
+  onKeepAll,
+  onClear,
+}: BulkToolbarProps) {
+  if (selectedCount === 0) return null
+
+  return (
+    <section
+      aria-label="Bulk actions"
+      className="flex flex-wrap items-center gap-3 border-b border-amber-200 bg-amber-50 px-4 py-3 lg:px-6"
+    >
+      <div className="mr-auto flex items-center gap-2">
+        <span className="flex h-7 min-w-7 items-center justify-center rounded-full bg-amber-400 px-2 font-mono text-xs font-bold text-slate-950">
+          {selectedCount}
+        </span>
+        <div>
+          <p className="text-sm font-semibold text-slate-900">sets selected</p>
+          <p className="text-xs text-slate-600">Apply one decision rule to the whole selection.</p>
+        </div>
+      </div>
+
+      <Select value={strategy} onValueChange={(value) => onStrategyChange(value as Strategy)}>
+        <SelectTrigger className="h-9 w-[220px] border-amber-300 bg-white" aria-label="Bulk recommendation">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {(Object.entries(strategyLabels) as [Strategy, string][]).map(([value, label]) => (
+            <SelectItem key={value} value={value}>
+              {label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <Button type="button" size="sm" onClick={onApplyStrategy} disabled={busy}>
+        <Sparkles className="mr-2 h-4 w-4" />
+        {busy ? 'Calculating…' : 'Apply recommendation'}
+      </Button>
+      <Button type="button" size="sm" variant="outline" onClick={onKeepAll} disabled={busy}>
+        <ShieldCheck className="mr-2 h-4 w-4" /> Keep all
+      </Button>
+      <Button type="button" size="sm" variant="ghost" onClick={onClear} disabled={busy}>
+        <RotateCcw className="mr-2 h-4 w-4" /> Clear reviews
+      </Button>
+    </section>
+  )
+}

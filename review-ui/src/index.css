@@ -1,0 +1,73 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    font-family: Aptos, "Segoe UI", system-ui, sans-serif;
+    color-scheme: light;
+    --background: 42 24% 96%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 222 47% 11%;
+    --primary-foreground: 48 100% 96%;
+    --secondary: 40 18% 92%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 40 18% 92%;
+    --muted-foreground: 215 16% 42%;
+    --accent: 43 96% 56%;
+    --accent-foreground: 222 47% 11%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 215 20% 82%;
+    --input: 215 20% 78%;
+    --ring: 38 92% 50%;
+    --radius: 0.45rem;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html {
+    background: #020617;
+  }
+
+  body {
+    @apply m-0 min-w-[320px] bg-background text-foreground antialiased;
+  }
+
+  button,
+  input,
+  select {
+    font: inherit;
+  }
+
+  ::selection {
+    background: #fbbf24;
+    color: #0f172a;
+  }
+
+  :focus-visible {
+    outline-offset: 2px;
+  }
+}
+@layer utilities {
+  .font-mono {
+    font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
