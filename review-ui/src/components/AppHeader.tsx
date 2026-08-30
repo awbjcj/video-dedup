@@ -37,21 +37,21 @@ export function AppHeader({
 
   return (
     <header className="border-b border-slate-800 bg-slate-950 text-white">
-      <div className="flex flex-wrap items-center gap-x-6 gap-y-3 px-4 py-3 lg:px-6">
-        <div className="flex min-w-[260px] items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-md bg-amber-400 text-slate-950">
-            <Video className="h-5 w-5" />
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-4 px-4 py-4 lg:px-6">
+        <div className="order-1 flex w-full shrink-0 items-center gap-3 sm:w-auto sm:min-w-[290px] sm:flex-1 sm:shrink">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md bg-amber-400 text-slate-950 shadow-sm">
+            <Video className="h-5 w-5" aria-hidden="true" />
           </div>
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <h1 className="text-base font-semibold tracking-tight">Video Dedup Review</h1>
+              <h1 className="text-lg font-semibold tracking-tight">Video Dedup Review</h1>
               {dirty ? (
                 <Badge className="border-amber-300/30 bg-amber-300/10 text-amber-300 hover:bg-amber-300/10">Unsaved</Badge>
               ) : (
                 <Badge className="border-emerald-300/30 bg-emerald-300/10 text-emerald-300 hover:bg-emerald-300/10">Saved</Badge>
               )}
             </div>
-            <p className="mt-0.5 truncate font-mono text-[11px] text-slate-500" title={reportPath}>
+            <p className="mt-1 truncate font-mono text-xs text-slate-400" title={reportPath}>
               {shortPath(reportPath, 68)}
             </p>
           </div>
@@ -59,28 +59,28 @@ export function AppHeader({
 
         <div className="hidden h-9 w-px bg-slate-800 xl:block" />
 
-        <dl className="flex flex-1 flex-wrap items-center gap-x-6 gap-y-2 text-xs">
+        <dl className="order-3 grid w-full grid-cols-2 gap-x-6 gap-y-3 text-sm sm:grid-cols-4 xl:order-none xl:flex xl:w-auto xl:flex-1 xl:flex-wrap xl:items-center">
           <div>
-            <dt className="text-slate-500">Progress</dt>
+            <dt className="text-slate-400">Progress</dt>
             <dd className="mt-0.5 font-mono font-semibold text-slate-100">{decidedCount} / {groupCount} sets</dd>
           </div>
           <div>
-            <dt className="text-slate-500">Files in review</dt>
+            <dt className="text-slate-400">Files in review</dt>
             <dd className="mt-0.5 font-mono font-semibold text-slate-100">{fileCount.toLocaleString()}</dd>
           </div>
           <div>
-            <dt className="text-slate-500">Selected removals</dt>
+            <dt className="text-slate-400">Selected removals</dt>
             <dd className="mt-0.5 font-mono font-semibold text-rose-300">{selectedRemovalCount.toLocaleString()}</dd>
           </div>
           <div>
-            <dt className="text-slate-500">Potential space</dt>
+            <dt className="text-slate-400">Potential space</dt>
             <dd className="mt-0.5 flex items-center gap-1 font-mono font-semibold text-amber-300">
               <HardDrive className="h-3.5 w-3.5" /> {formatBytes(estimatedReclaim)}
             </dd>
           </div>
         </dl>
 
-        <div className="flex items-center gap-2">
+        <div className="order-2 ml-auto flex w-full items-center justify-end gap-2 sm:w-auto">
           <Button
             type="button"
             size="sm"
@@ -104,7 +104,12 @@ export function AppHeader({
           </Button>
         </div>
       </div>
-      <Progress value={progress} className="h-1 rounded-none bg-slate-800 [&>div]:bg-amber-400" />
+      <Progress
+        value={progress}
+        aria-label="Review progress"
+        aria-valuetext={`${decidedCount} of ${groupCount} sets reviewed`}
+        className="h-1.5 rounded-none bg-slate-800 [&>div]:bg-amber-400"
+      />
     </header>
   )
 }

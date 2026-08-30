@@ -6,6 +6,7 @@
   :root {
     font-family: Aptos, "Segoe UI", system-ui, sans-serif;
     color-scheme: light;
+    --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
     --background: 42 24% 96%;
     --foreground: 222 47% 11%;
     --card: 0 0% 100%;
@@ -34,15 +35,19 @@
 
   html {
     background: #020617;
+    font-size: 106.25%;
+    text-size-adjust: 100%;
   }
 
   body {
     @apply m-0 min-w-[320px] bg-background text-foreground antialiased;
+    line-height: 1.5;
   }
 
   button,
   input,
-  select {
+  select,
+  textarea {
     font: inherit;
   }
 
@@ -52,7 +57,8 @@
   }
 
   :focus-visible {
-    outline-offset: 2px;
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 3px;
   }
 }
 @layer utilities {

@@ -107,12 +107,12 @@ export function ReviewWorkspace({
   }
 
   return (
-    <main className="min-w-0 flex-1 overflow-y-auto bg-[#f4f1ea]">
-      <div className="border-b border-stone-300 bg-white px-4 py-4 lg:px-6">
+    <main className="min-w-0 flex-1 bg-[#f4f1ea] lg:overflow-y-auto">
+      <div className="border-b border-stone-300 bg-white px-4 py-5 lg:px-6">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <span className="font-mono text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+              <span className="font-mono text-sm font-semibold uppercase tracking-[0.14em] text-slate-500">
                 Set {group.id}
               </span>
               {decision ? (
@@ -125,10 +125,10 @@ export function ReviewWorkspace({
                 </Badge>
               )}
             </div>
-            <h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-950">
+            <h2 className="mt-2 text-3xl font-semibold leading-tight tracking-tight text-slate-950">
               Compare {group.fileCount} related videos
-            </h1>
-            <p className="mt-1 text-sm text-slate-500">
+            </h2>
+            <p className="mt-2 max-w-3xl text-base leading-relaxed text-slate-600">
               Checked files are kept. Unchecked files are added to the plan only when coverage is safe.
             </p>
           </div>
@@ -155,7 +155,7 @@ export function ReviewWorkspace({
         </div>
 
         {!decision && (
-          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-l-4 border-amber-400 bg-amber-50 px-4 py-3 text-sm">
+          <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-l-4 border-amber-400 bg-amber-50 px-4 py-4 text-base">
             <div>
               <p className="font-semibold text-amber-950">Safe default: keep everything</p>
               <p className="text-amber-800">This set stays untouched until you record a decision.</p>
@@ -173,13 +173,13 @@ export function ReviewWorkspace({
         )}
       </div>
 
-      <section className="border-b border-stone-300 bg-stone-100 px-4 py-3 lg:px-6" aria-label="Recommendation controls">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="mr-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
+      <section className="border-b border-stone-300 bg-stone-100 px-4 py-4 lg:px-6" aria-label="Recommendation controls">
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="mr-1 flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-slate-600">
             <Sparkles className="h-4 w-4 text-amber-600" /> Quick recommendation
           </span>
           <Select value={strategy} onValueChange={(value) => setStrategy(value as Strategy)}>
-            <SelectTrigger className="h-9 w-[230px] bg-white" aria-label="Recommendation strategy">
+            <SelectTrigger className="w-full bg-white sm:w-[250px]" aria-label="Recommendation strategy">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -197,10 +197,10 @@ export function ReviewWorkspace({
               Reset to unresolved
             </Button>
           )}
-          <div className="ml-auto flex gap-4 text-right text-xs">
-            <div><span className="block text-slate-500">Keep</span><strong>{keeperIds.size}</strong></div>
-            <div><span className="block text-slate-500">Quarantine</span><strong>{removedFiles.length}</strong></div>
-            <div><span className="block text-slate-500">Potential space</span><strong>{formatBytes(estimatedReclaim)}</strong></div>
+          <div className="ml-auto flex gap-5 text-right text-sm">
+            <div><span className="block text-slate-500">Keep</span><strong className="text-base">{keeperIds.size}</strong></div>
+            <div><span className="block text-slate-500">Quarantine</span><strong className="text-base">{removedFiles.length}</strong></div>
+            <div><span className="block text-slate-500">Potential space</span><strong className="text-base">{formatBytes(estimatedReclaim)}</strong></div>
           </div>
         </div>
       </section>
@@ -209,7 +209,7 @@ export function ReviewWorkspace({
         <div className="mb-4 flex flex-wrap items-center gap-3">
           <label className="relative min-w-[240px] flex-1" htmlFor="file-search">
             <span className="sr-only">Search files in this set</span>
-            <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" aria-hidden="true" />
             <Input
               id="file-search"
               type="search"
@@ -229,7 +229,7 @@ export function ReviewWorkspace({
               setPage(1)
             }}
           >
-            <SelectTrigger className="h-9 w-[190px] bg-white" aria-label="Sort files">
+            <SelectTrigger className="w-full bg-white sm:w-[210px]" aria-label="Sort files">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -243,7 +243,7 @@ export function ReviewWorkspace({
         </div>
 
         {pageFiles.length === 0 ? (
-          <div className="border border-dashed border-stone-300 bg-white px-6 py-16 text-center text-sm text-slate-500">
+          <div className="border border-dashed border-stone-300 bg-white px-6 py-16 text-center text-base text-slate-600" role="status">
             No files match your search in this set.
           </div>
         ) : (
@@ -263,15 +263,15 @@ export function ReviewWorkspace({
         )}
 
         {pageCount > 1 && (
-          <nav className="mt-5 flex items-center justify-between border-t border-stone-300 pt-4" aria-label="Files pagination">
-            <p className="text-sm text-slate-500">
+          <nav className="mt-5 flex flex-col items-start justify-between gap-3 border-t border-stone-300 pt-4 sm:flex-row sm:items-center" aria-label="Files pagination">
+            <p className="text-base text-slate-600">
               Showing {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, visibleFiles.length)} of {visibleFiles.length}
             </p>
             <div className="flex items-center gap-2">
               <Button type="button" size="sm" variant="outline" disabled={page === 1} onClick={() => setPage((value) => value - 1)}>
                 <ChevronLeft className="mr-1 h-4 w-4" /> Previous page
               </Button>
-              <span className="font-mono text-xs text-slate-500">{page} / {pageCount}</span>
+              <span className="font-mono text-sm text-slate-600">{page} / {pageCount}</span>
               <Button type="button" size="sm" variant="outline" disabled={page === pageCount} onClick={() => setPage((value) => value + 1)}>
                 Next page <ChevronRight className="ml-1 h-4 w-4" />
               </Button>

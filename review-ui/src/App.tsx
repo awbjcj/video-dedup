@@ -182,8 +182,8 @@ function App() {
       <div className="flex min-h-dvh items-center justify-center bg-[#f4f1ea] p-6">
         <div className="w-full max-w-lg border border-rose-200 bg-white p-8 text-center shadow-sm">
           <AlertCircle className="mx-auto h-9 w-9 text-rose-600" />
-          <h1 className="mt-4 text-xl font-semibold text-slate-950">Review data could not be loaded</h1>
-          <p className="mt-2 text-sm text-slate-600">{loadError}</p>
+          <h1 className="mt-4 text-2xl font-semibold text-slate-950">Review data could not be loaded</h1>
+          <p className="mt-2 text-base text-slate-600">{loadError}</p>
           <Button type="button" className="mt-5" onClick={() => window.location.reload()}>
             <RefreshCw className="mr-2 h-4 w-4" /> Try again
           </Button>
@@ -197,14 +197,14 @@ function App() {
       <div className="flex min-h-dvh items-center justify-center bg-slate-950 text-slate-300">
         <div className="text-center">
           <LoaderCircle className="mx-auto h-8 w-8 animate-spin text-amber-400" />
-          <p className="mt-3 text-sm">Preparing duplicate sets and safe coverage data…</p>
+          <p className="mt-3 text-base">Preparing duplicate sets and safe coverage data…</p>
         </div>
       </div>
     )
   }
 
   return (
-    <div className="flex h-dvh min-h-[640px] flex-col overflow-hidden bg-[#f4f1ea]">
+    <div className="flex min-h-dvh flex-col bg-[#f4f1ea] lg:h-dvh lg:min-h-[640px] lg:overflow-hidden">
       <AppHeader
         reportPath={session.reportPath}
         planPath={session.planPath}
@@ -220,7 +220,7 @@ function App() {
         onSave={() => setSaveDialogOpen(true)}
       />
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[280px_minmax(0,1fr)] lg:grid-cols-[340px_minmax(0,1fr)] lg:grid-rows-1">
+      <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[22rem_auto] lg:grid-cols-[370px_minmax(0,1fr)] lg:grid-rows-1">
         <ReviewSidebar
           groups={session.groups}
           decisions={review.decisions}

@@ -69,7 +69,27 @@ async function main() {
     await groupSearch.fill('')
 
     await page.setViewportSize({ width: 390, height: 844 })
+    await page.evaluate(() => window.scrollTo(0, 0))
+    await page.waitForTimeout(750)
     await page.screenshot({ path: path.join(outputDirectory, 'review-mobile.png'), fullPage: false })
+
+    const accessibilityMetrics = await page.evaluate(() => {
+      const title = document.querySelector('h1')
+      const titleStyle = title ? getComputedStyle(title) : null
+      const titleLineHeight = titleStyle ? Number.parseFloat(titleStyle.lineHeight) : 0
+      const titleLineCount = title && titleLineHeight
+        ? Math.round(title.getBoundingClientRect().height / titleLineHeight)
+        : 0
+      return {
+        rootFontSize: Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
+        viewportWidth: document.documentElement.clientWidth,
+        contentWidth: document.documentElement.scrollWidth,
+        titleLineCount,
+      }
+    })
+    assert.ok(accessibilityMetrics.rootFontSize >= 17, 'Root font size should be at least 17px')
+    assert.equal(accessibilityMetrics.contentWidth, accessibilityMetrics.viewportWidth)
+    assert.equal(accessibilityMetrics.titleLineCount, 1)
 
     const headings = await page.locator('h1, h2, h3').allTextContents()
     const metrics = await page.evaluate(() => {
@@ -83,7 +103,7 @@ async function main() {
     })
     assert.deepEqual(consoleProblems, [])
     assert.deepEqual(failedResponses, [])
-    console.log(JSON.stringify({ ok: true, headings, metrics, buttonCount, checkboxCount }, null, 2))
+    console.log(JSON.stringify({ ok: true, headings, metrics, accessibilityMetrics, buttonCount, checkboxCount }, null, 2))
   } finally {
     await browser.close()
   }

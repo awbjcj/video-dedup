@@ -57,13 +57,13 @@ export function ReviewSidebar({
 
   return (
     <aside className="flex min-h-0 flex-col border-r border-slate-800 bg-slate-950 text-slate-100">
-      <div className="border-b border-slate-800 px-4 py-4">
+      <div className="border-b border-slate-800 px-4 py-5">
         <div className="mb-3 flex items-center justify-between gap-3">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-amber-400">
+            <p className="text-sm font-semibold uppercase tracking-[0.14em] text-amber-400">
               Review queue
             </p>
-            <h2 className="mt-1 text-lg font-semibold">Duplicate sets</h2>
+            <h2 className="mt-1 text-xl font-semibold">Duplicate sets</h2>
           </div>
           <Badge className="border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-900">
             {visibleGroups.length} shown
@@ -72,7 +72,7 @@ export function ReviewSidebar({
 
         <label className="relative block" htmlFor="group-search">
           <span className="sr-only">Search duplicate sets</span>
-          <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-500" />
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden="true" />
           <Input
             id="group-search"
             type="search"
@@ -83,7 +83,7 @@ export function ReviewSidebar({
           />
         </label>
 
-        <div className="mt-3 grid grid-cols-3 gap-1 rounded-md bg-slate-900 p-1" aria-label="Filter sets">
+        <div className="mt-3 grid grid-cols-3 gap-1 rounded-md bg-slate-900 p-1" role="group" aria-label="Filter sets">
           {(['all', 'unresolved', 'decided'] as const).map((value) => (
             <Button
               key={value}
@@ -91,9 +91,10 @@ export function ReviewSidebar({
               size="sm"
               variant="ghost"
               className={cn(
-                'h-8 px-2 capitalize text-slate-400 hover:bg-slate-800 hover:text-slate-100',
+                'h-9 px-2 capitalize text-slate-300 hover:bg-slate-800 hover:text-slate-100',
                 filter === value && 'bg-slate-700 text-white hover:bg-slate-700',
               )}
+              aria-pressed={filter === value}
               onClick={() => onFilterChange(value)}
             >
               {value === 'unresolved' ? 'To review' : value}
@@ -102,7 +103,7 @@ export function ReviewSidebar({
         </div>
       </div>
 
-      <div className="flex items-center justify-between border-b border-slate-800 px-4 py-2.5 text-xs text-slate-400">
+      <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3 text-sm text-slate-300">
         <label className="flex cursor-pointer items-center gap-2" htmlFor="select-visible-groups">
           <Checkbox
             id="select-visible-groups"
@@ -122,7 +123,7 @@ export function ReviewSidebar({
 
       <div className="min-h-0 flex-1 overflow-y-auto" aria-label="Duplicate set list">
         {visibleGroups.length === 0 ? (
-          <div className="px-6 py-12 text-center text-sm text-slate-500">
+          <div className="px-6 py-12 text-center text-base text-slate-400" role="status">
             <Layers3 className="mx-auto mb-3 h-7 w-7" />
             No sets match this filter.
           </div>
@@ -135,7 +136,7 @@ export function ReviewSidebar({
                 <li
                   key={group.id}
                   className={cn(
-                    'group flex items-start gap-3 border-l-2 px-3 py-3 transition-colors',
+                    'group flex items-start gap-3 border-l-[3px] px-3 py-4 transition-colors',
                     isActive
                       ? 'border-l-amber-400 bg-slate-900'
                       : 'border-l-transparent hover:bg-slate-900/70',
@@ -150,27 +151,28 @@ export function ReviewSidebar({
                   <button
                     type="button"
                     onClick={() => onActivate(group.id)}
-                    className="min-w-0 flex-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
+                    aria-current={isActive ? 'true' : undefined}
+                    className="min-w-0 flex-1 rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
                   >
                     <span className="flex items-center justify-between gap-3">
                       <span className="font-mono text-sm font-semibold text-slate-100">
                         Set {group.id}
                       </span>
                       {decision ? (
-                        <span className="flex items-center gap-1 text-[11px] font-medium text-emerald-400">
+                        <span className="flex items-center gap-1 text-xs font-medium text-emerald-400">
                           <CheckCircle2 className="h-3.5 w-3.5" /> Reviewed
                         </span>
                       ) : (
-                        <span className="flex items-center gap-1 text-[11px] font-medium text-slate-500">
+                        <span className="flex items-center gap-1 text-xs font-medium text-slate-400">
                           <CircleDashed className="h-3.5 w-3.5" /> Needs review
                         </span>
                       )}
                     </span>
-                    <span className="mt-1.5 flex items-center gap-1.5 text-xs text-slate-400">
+                    <span className="mt-2 flex items-center gap-1.5 text-sm text-slate-300">
                       <FileVideo2 className="h-3.5 w-3.5" />
                       {group.fileCount} files · {group.matchCount} matches
                     </span>
-                    <span className="mt-1 block truncate text-xs text-slate-500">
+                    <span className="mt-1 block truncate text-sm text-slate-400">
                       {group.files[0]?.name}
                     </span>
                   </button>

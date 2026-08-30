@@ -35,13 +35,13 @@ export function FileCard({
   return (
     <article
       className={cn(
-        'overflow-hidden rounded-md border bg-white transition-colors',
-        kept ? 'border-slate-200' : 'border-rose-300 bg-rose-50/50',
+        'overflow-hidden rounded-md border bg-white shadow-sm transition-colors',
+        kept ? 'border-slate-300' : 'border-rose-300 bg-rose-50/50',
       )}
     >
       <div className="relative aspect-video bg-slate-950">
         {videoFailed ? (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-6 text-center text-sm text-slate-400">
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-6 text-center text-base text-slate-300">
             <FileWarning className="h-7 w-7 text-amber-400" />
             <span>
               {file.previewMode === 'transcoded'
@@ -71,14 +71,14 @@ export function FileCard({
         )}
         <div
           className={cn(
-            'pointer-events-none absolute left-2 top-2 rounded-sm px-2 py-1 text-[11px] font-bold uppercase tracking-wide shadow-sm',
+            'pointer-events-none absolute left-2 top-2 rounded-sm px-2.5 py-1.5 text-xs font-bold uppercase tracking-wide shadow-sm',
             kept ? 'bg-emerald-500 text-emerald-950' : 'bg-rose-600 text-white',
           )}
         >
           {kept ? 'Keep' : 'Quarantine'}
         </div>
         {file.previewMode === 'transcoded' ? (
-          <div className="pointer-events-none absolute right-2 top-2 rounded-sm bg-slate-800/90 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-100 shadow-sm">
+          <div className="pointer-events-none absolute right-2 top-2 rounded-sm bg-slate-800/90 px-2.5 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-100 shadow-sm">
             Live transcode
           </div>
         ) : null}
@@ -87,10 +87,10 @@ export function FileCard({
       <div className="p-4">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <h3 className="truncate text-sm font-semibold text-slate-950" title={file.name}>
+            <h3 className="truncate text-base font-semibold leading-snug text-slate-950" title={file.name}>
               {file.name}
             </h3>
-            <p className="mt-1 truncate font-mono text-[11px] text-slate-500" title={file.path}>
+            <p className="mt-1 truncate font-mono text-xs leading-relaxed text-slate-600" title={file.path}>
               {shortPath(file.folder)}
             </p>
           </div>
@@ -98,7 +98,7 @@ export function FileCard({
             type="button"
             size="icon"
             variant="ghost"
-            className="h-8 w-8 shrink-0 text-slate-500"
+            className="shrink-0 text-slate-600"
             onClick={() => void copyPath()}
             aria-label={`Copy path for ${file.name}`}
           >
@@ -121,12 +121,12 @@ export function FileCard({
           </Badge>
         </div>
 
-        <div className="mt-3 flex items-center justify-between gap-3 border-t border-slate-100 pt-3 text-xs">
-          <span className="text-slate-500">Covered by this set</span>
+        <div className="mt-4 flex items-center justify-between gap-3 border-t border-slate-200 pt-3 text-sm">
+          <span className="text-slate-600">Covered by this set</span>
           <span className="font-mono font-semibold text-slate-800">{file.coveredPercent.toFixed(1)}%</span>
         </div>
 
-        <div className="mt-4 flex items-center justify-between gap-2">
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
           <label
             htmlFor={`keep-file-${file.id}`}
             className="flex cursor-pointer items-center gap-2 text-sm font-medium text-slate-800"
@@ -144,7 +144,7 @@ export function FileCard({
               <span className="flex items-center gap-1.5 text-rose-700"><Trash2 className="h-4 w-4" /> Quarantine</span>
             )}
           </label>
-          <Button type="button" size="sm" variant="ghost" className="h-8 text-xs" onClick={onKeepOnly}>
+          <Button type="button" size="sm" variant="ghost" onClick={onKeepOnly}>
             <ShieldCheck className="mr-1.5 h-3.5 w-3.5" /> Keep only this
           </Button>
         </div>

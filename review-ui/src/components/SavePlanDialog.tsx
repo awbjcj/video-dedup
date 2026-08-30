@@ -48,23 +48,23 @@ export function SavePlanDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-md border bg-slate-200 text-sm">
-          <div className="bg-white p-3"><dt className="text-slate-500">Reviewed sets</dt><dd className="mt-1 font-mono font-semibold">{decidedCount} / {groupCount}</dd></div>
-          <div className="bg-white p-3"><dt className="text-slate-500">Planned selections</dt><dd className="mt-1 font-mono font-semibold">{removalCount} files</dd></div>
-          <div className="bg-white p-3"><dt className="text-slate-500">Estimated space</dt><dd className="mt-1 font-mono font-semibold">{formatBytes(estimatedReclaim)}</dd></div>
-          <div className="bg-white p-3"><dt className="text-slate-500">Unreviewed kept safe</dt><dd className="mt-1 font-mono font-semibold">{unresolved} sets</dd></div>
+        <dl className="grid grid-cols-1 gap-px overflow-hidden rounded-md border bg-slate-200 text-base sm:grid-cols-2">
+          <div className="bg-white p-4"><dt className="text-slate-600">Reviewed sets</dt><dd className="mt-1 font-mono font-semibold">{decidedCount} / {groupCount}</dd></div>
+          <div className="bg-white p-4"><dt className="text-slate-600">Planned selections</dt><dd className="mt-1 font-mono font-semibold">{removalCount} files</dd></div>
+          <div className="bg-white p-4"><dt className="text-slate-600">Estimated space</dt><dd className="mt-1 font-mono font-semibold">{formatBytes(estimatedReclaim)}</dd></div>
+          <div className="bg-white p-4"><dt className="text-slate-600">Unreviewed kept safe</dt><dd className="mt-1 font-mono font-semibold">{unresolved} sets</dd></div>
         </dl>
 
         {unresolved > 0 && (
-          <div className="flex gap-3 border-l-4 border-amber-400 bg-amber-50 p-3 text-sm text-amber-950">
+          <div className="flex gap-3 border-l-4 border-amber-400 bg-amber-50 p-4 text-base text-amber-950">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
             <p><strong>{unresolved} unreviewed sets will keep every file.</strong> You can reopen this plan later and continue reviewing.</p>
           </div>
         )}
 
         <div className="rounded-md border border-slate-200 bg-white p-3">
-          <p className="text-xs font-medium text-slate-500">Plan destination</p>
-          <p className="mt-1 break-all font-mono text-xs text-slate-800" title={planPath}>{shortPath(planPath, 120)}</p>
+          <p className="text-sm font-medium text-slate-600">Plan destination</p>
+          <p className="mt-1 break-all font-mono text-sm leading-relaxed text-slate-800" title={planPath}>{shortPath(planPath, 120)}</p>
         </div>
 
         <DialogFooter>
