@@ -10,3 +10,4 @@ video-dedup-quarantine-*/
 __pycache__/
 .pytest_cache/
 .tmp-*/
+.omc/

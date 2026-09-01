@@ -2052,7 +2052,7 @@ class WebReviewState:
             payload.get("minimumDuplicatePercent"), "Minimum duplicate percentage"
         )
         try:
-            minimum_duration = float(payload.get("minimumDuration"))
+            minimum_duration = float(payload.get("minimumDuration"))  # type: ignore[arg-type]
         except (TypeError, ValueError) as exc:
             raise ValueError("Minimum video duration must be zero or greater.") from exc
         if not math.isfinite(minimum_duration) or minimum_duration < 0:
@@ -2075,10 +2075,10 @@ class WebReviewState:
             payload.get("minimumDuplicatePercent"), "Minimum duplicate percentage"
         )
         try:
-            minimum_duration = float(payload.get("minimumDuration"))
-            sample_interval = float(payload.get("sampleInterval"))
-            minimum_segment = float(payload.get("minimumSegment"))
-            hash_distance = int(payload.get("hashDistance"))
+            minimum_duration = float(payload.get("minimumDuration"))  # type: ignore[arg-type]
+            sample_interval = float(payload.get("sampleInterval"))  # type: ignore[arg-type]
+            minimum_segment = float(payload.get("minimumSegment"))  # type: ignore[arg-type]
+            hash_distance = int(payload.get("hashDistance"))  # type: ignore[arg-type]
         except (TypeError, ValueError) as exc:
             raise ValueError("Scan settings contain an invalid number.") from exc
         if not math.isfinite(minimum_duration) or minimum_duration < 0:
