@@ -1,4 +1,4 @@
-import type { Decision, SaveResult, SessionPayload, Strategy } from '@/types'
+import type { Decision, DetectionSettings, RescanStatus, SaveResult, SessionPayload, Strategy } from '@/types'
 
 async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -39,4 +39,24 @@ export function savePlan(decisions: Decision[]): Promise<SaveResult> {
     method: 'POST',
     body: JSON.stringify({ decisions }),
   })
+}
+
+type EditableSettings = Omit<DetectionSettings, 'rescanAvailable' | 'reportMinimumDuplicatePercent'>
+
+export function updateSettings(settings: EditableSettings): Promise<SessionPayload> {
+  return requestJson<SessionPayload>('/api/settings', {
+    method: 'POST',
+    body: JSON.stringify(settings),
+  })
+}
+
+export function startRescan(settings: EditableSettings): Promise<RescanStatus> {
+  return requestJson<RescanStatus>('/api/rescan', {
+    method: 'POST',
+    body: JSON.stringify(settings),
+  })
+}
+
+export function fetchRescanStatus(): Promise<RescanStatus> {
+  return requestJson<RescanStatus>('/api/rescan-status')
 }

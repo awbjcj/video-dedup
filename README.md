@@ -51,10 +51,18 @@ Review duplicate sets visually in the local browser (recommended):
 python .\video_dedup.py web-review .\duplicates.json --plan .\decisions.json
 ```
 
-The browser opens automatically and provides video previews, search and sorting,
-keeper checkboxes, bulk set selection, reusable recommendations, undo, review
-progress, and a save summary. Large sets are paged so only twelve video players
-are loaded at once. If the named plan already exists, its decisions are resumed.
+The browser opens automatically and provides video previews, duplicate-range
+timelines, search and sorting, keeper checkboxes, bulk set selection, reusable
+recommendations, undo, review progress, and a save summary. Select a striped
+timeline segment to jump to the matching footage. Large sets are paged so only
+twelve video players are loaded at once. If the named plan already exists, its
+decisions are resumed.
+
+Use **Settings** in the review header to configure the minimum duplicated
+timeline, minimum video duration, deletion safety coverage, watermark/re-encode
+tolerance, frame sample interval, and minimum matching segment. Review filters
+apply immediately. Accuracy changes can start a safe rescan from the same dialog;
+the existing fingerprint cache is reused and no video file is modified.
 
 The server listens only on `127.0.0.1` by default. It can read only video IDs
 listed in the report, and saving writes a JSON plan—it never moves or deletes a
@@ -160,9 +168,14 @@ videos with alternate audio, commentary, or dubbing before removing them.
 
 ## Accuracy and scale controls
 
+- `--min-duration 10`: ignore video files shorter than ten seconds during scans
+  and review. Set it to `0` to include every duration.
 - `--sample-interval 3`: confirmation frame spacing; smaller is more accurate
   but slower and creates larger reports.
 - `--min-segment 9`: shortest overlap to report.
+- `--min-duplicate-percent 95`: only report a pair when either video's matched
+  timeline reaches the requested percentage. The default `0` preserves all
+  sufficiently long matches.
 - `--hash-distance 20`: visual tolerance; lower reduces false positives.
 - `--candidate-tokens 512`: memory/recall tradeoff for the 10k-file index.
 - `--max-candidates-per-video 50`: bounds worst-case confirmation work.

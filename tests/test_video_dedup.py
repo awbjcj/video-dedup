@@ -33,7 +33,7 @@ class FingerprintTests(unittest.TestCase):
             "files": [
                 {
                     "id": index, "path": str(path), "size_bytes": 10 + index,
-                    "mtime_ns": 100 + index, "duration_seconds": 5,
+                    "mtime_ns": 100 + index, "duration_seconds": 15,
                     "width": 100, "height": 100, "detailed_sample_count": None,
                 }
                 for index, path in enumerate(paths)
@@ -66,6 +66,66 @@ class FingerprintTests(unittest.TestCase):
         assert match is not None
         self.assertEqual(match["a_duplicated_percent"], 100.0)
         self.assertEqual(match["b_duplicated_percent"], 50.0)
+
+    def test_short_video_filter_keeps_exactly_ten_seconds(self) -> None:
+        files = {
+            0: {"duration_seconds": 9.999},
+            1: {"duration_seconds": 10.0},
+            2: {"duration_seconds": 20.0},
+        }
+        matches = [
+            {"a_id": 0, "b_id": 1, "kind": "exact"},
+            {"a_id": 1, "b_id": 2, "kind": "exact"},
+        ]
+
+        eligible_files, eligible_matches, filtered_count = vd.filter_short_videos(
+            files, matches, 10.0
+        )
+
+        self.assertEqual(set(eligible_files), {1, 2})
+        self.assertEqual(eligible_matches, [matches[1]])
+        self.assertEqual(filtered_count, 1)
+
+    def test_duplicate_percentage_filter_is_directional(self) -> None:
+        matches = [
+            {
+                "a_id": 0, "b_id": 1, "kind": "perceptual",
+                "a_duplicated_percent": 100.0, "b_duplicated_percent": 12.5,
+            },
+            {
+                "a_id": 2, "b_id": 3, "kind": "perceptual",
+                "a_duplicated_percent": 94.9, "b_duplicated_percent": 94.9,
+            },
+            {"a_id": 4, "b_id": 5, "kind": "exact"},
+        ]
+
+        eligible, filtered_count = vd.filter_duplicate_matches(matches, 95.0)
+
+        self.assertEqual(eligible, [matches[0], matches[2]])
+        self.assertEqual(filtered_count, 1)
+
+    def test_duplicate_time_ranges_merge_bins_for_timeline(self) -> None:
+        matches = [
+            {
+                "a_id": 0,
+                "b_id": 1,
+                "kind": "perceptual",
+                "a_sample_ranges": [[2, 4], [7, 8]],
+                "b_sample_ranges": [[0, 2]],
+            }
+        ]
+
+        ranges = vd.duplicate_time_ranges(
+            0, matches, duration=30.0, interval=3.0, sample_count=10
+        )
+
+        self.assertEqual(
+            ranges,
+            [
+                {"startSeconds": 6.0, "endSeconds": 15.0},
+                {"startSeconds": 21.0, "endSeconds": 27.0},
+            ],
+        )
 
     def test_flat_frames_do_not_create_a_perceptual_match(self) -> None:
         flat = [vd.Sample(0, 0xFFFFFFFFFFFFFFFF, 16, float(index)) for index in range(12)]
@@ -211,12 +271,12 @@ class FingerprintTests(unittest.TestCase):
                 "files": [
                     {
                         "id": 0, "path": str(short_name), "size_bytes": 10, "mtime_ns": 1,
-                        "duration_seconds": 5, "width": 100, "height": 100,
+                        "duration_seconds": 15, "width": 100, "height": 100,
                         "detailed_sample_count": None,
                     },
                     {
                         "id": 1, "path": str(long_name), "size_bytes": 10, "mtime_ns": 1,
-                        "duration_seconds": 5, "width": 100, "height": 100,
+                        "duration_seconds": 15, "width": 100, "height": 100,
                         "detailed_sample_count": None,
                     },
                 ],
@@ -331,6 +391,10 @@ class FingerprintTests(unittest.TestCase):
 
             self.assertEqual(session["summary"]["groupCount"], 3)
             self.assertEqual(session["summary"]["fileCount"], 6)
+            self.assertEqual(
+                session["groups"][0]["files"][0]["duplicateRanges"],
+                [{"startSeconds": 0.0, "endSeconds": 15.0}],
+            )
             self.assertEqual(len(recommendations), 2)
             self.assertEqual(result["actionCount"], 1)
             self.assertEqual(result["unresolvedKeptCount"], 2)
@@ -338,6 +402,15 @@ class FingerprintTests(unittest.TestCase):
             self.assertEqual(payload["strategy"], "web")
             self.assertEqual(payload["actions"][0]["path"], str(paths[0]))
             self.assertEqual(len(payload["decisions"]), 3)
+
+            filtered_session = state.update_settings({
+                "minimumDeleteCoverage": 98,
+                "minimumDuplicatePercent": 95,
+                "minimumDuration": 20,
+            })
+            self.assertEqual(filtered_session["summary"]["groupCount"], 0)
+            self.assertEqual(filtered_session["summary"]["filteredShortFileCount"], 6)
+            self.assertEqual(filtered_session["settings"]["minimumDeleteCoverage"], 98)
 
     def test_web_review_state_supports_concurrent_plan_saves(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -392,6 +465,39 @@ class FingerprintTests(unittest.TestCase):
             self.assertEqual(maximum_active_replaces, 1)
             payload = json.loads(plan_path.read_text(encoding="utf-8"))
             self.assertIn(payload["decisions"][0]["keeper_paths"], [[str(paths[0])], [str(paths[1])]])
+
+    def test_web_review_rescan_command_includes_ui_accuracy_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            report_path, _ = self.write_three_group_report(root)
+            _, report = vd.load_json(str(report_path))
+            files = {int(item["id"]): item for item in report["files"]}
+            matches = report["matches"]
+            state = vd.WebReviewState(
+                report_path,
+                root / "plan.json",
+                files,
+                matches,
+                vd.connected_components(files, matches),
+                1.0,
+                [str(root)],
+                95.0,
+            )
+
+            command, settings = state._rescan_command({
+                "minimumDeleteCoverage": 98,
+                "minimumDuplicatePercent": 95,
+                "minimumDuration": 12,
+                "sampleInterval": 1.5,
+                "minimumSegment": 6,
+                "hashDistance": 28,
+            })
+
+            self.assertEqual(command[2], "scan")
+            self.assertEqual(command[command.index("--min-duplicate-percent") + 1], "95")
+            self.assertEqual(command[command.index("--hash-distance") + 1], "28")
+            self.assertEqual(command[command.index("--sample-interval") + 1], "1.5")
+            self.assertEqual(settings["minimumDeleteCoverage"], 98)
 
     def test_web_review_handler_serves_session_and_video_ranges(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -451,6 +557,28 @@ class FingerprintTests(unittest.TestCase):
                 recommend_payload = json.loads(recommend_response.read())
                 self.assertEqual(recommend_response.status, 200)
                 self.assertEqual(recommend_payload["decisions"][0]["groupId"], 1)
+
+                settings_body = json.dumps({
+                    "minimumDeleteCoverage": 97,
+                    "minimumDuplicatePercent": 95,
+                    "minimumDuration": 10,
+                    "sampleInterval": 1,
+                    "minimumSegment": 9,
+                    "hashDistance": 24,
+                }).encode()
+                connection.request(
+                    "POST", "/api/settings", body=settings_body,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Content-Length": str(len(settings_body)),
+                        "X-Video-Dedup-Review": "1",
+                    },
+                )
+                settings_response = connection.getresponse()
+                settings_payload = json.loads(settings_response.read())
+                self.assertEqual(settings_response.status, 200)
+                self.assertEqual(settings_payload["settings"]["minimumDuplicatePercent"], 95)
+                self.assertEqual(settings_payload["settings"]["minimumDeleteCoverage"], 97)
             finally:
                 connection.close()
                 server.shutdown()
@@ -644,7 +772,8 @@ class EndToEndVideoTests(unittest.TestCase):
 
             code = vd.main([
                 "scan", str(folder), "--depth", "0", "--sample-interval", "0.5",
-                "--min-segment", "2", "--workers", "2", "--report", str(report),
+                "--min-segment", "2", "--min-duration", "0", "--workers", "2",
+                "--report", str(report),
                 "--cache", str(cache),
             ])
             self.assertEqual(code, 0)

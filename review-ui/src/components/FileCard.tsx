@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Check, Copy, FileWarning, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
+import { DuplicateTimeline } from '@/components/DuplicateTimeline'
 import { formatBytes, formatDuration, shortPath } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { VideoFile } from '@/types'
@@ -26,6 +27,7 @@ export function FileCard({
   onCopied,
 }: FileCardProps) {
   const [videoFailed, setVideoFailed] = useState(false)
+  const videoRef = useRef<HTMLVideoElement>(null)
 
   async function copyPath() {
     await navigator.clipboard.writeText(file.path)
@@ -60,6 +62,7 @@ export function FileCard({
           </div>
         ) : (
           <video
+            ref={videoRef}
             className="h-full w-full object-contain"
             controls
             playsInline
@@ -83,6 +86,16 @@ export function FileCard({
           </div>
         ) : null}
       </div>
+      <DuplicateTimeline
+        fileName={file.name}
+        duration={file.durationSeconds}
+        ranges={file.duplicateRanges}
+        onSeek={(seconds) => {
+          if (!videoRef.current) return
+          videoRef.current.currentTime = seconds
+          videoRef.current.focus()
+        }}
+      />
 
       <div className="p-4">
         <div className="flex items-start justify-between gap-3">

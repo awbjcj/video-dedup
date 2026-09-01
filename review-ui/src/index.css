@@ -65,6 +65,21 @@
   .font-mono {
     font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
   }
+
+  .duplicate-timeline-segment {
+    background-color: #f59e0b;
+    background-image: repeating-linear-gradient(
+      135deg,
+      rgb(254 243 199 / 55%) 0,
+      rgb(254 243 199 / 55%) 0.2rem,
+      transparent 0.2rem,
+      transparent 0.4rem
+    );
+  }
+
+  .duplicate-timeline-segment:hover {
+    background-color: #fbbf24;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

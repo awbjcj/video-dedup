@@ -1,4 +1,4 @@
-import { HardDrive, Save, ShieldCheck, Undo2, Video } from 'lucide-react'
+import { HardDrive, Save, Settings2, ShieldCheck, Undo2, Video } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -10,6 +10,8 @@ type AppHeaderProps = {
   planPath: string
   groupCount: number
   fileCount: number
+  filteredShortFileCount: number
+  minimumDuration: number
   decidedCount: number
   selectedRemovalCount: number
   estimatedReclaim: number
@@ -17,6 +19,7 @@ type AppHeaderProps = {
   canUndo: boolean
   saving: boolean
   onUndo: () => void
+  onOpenSettings: () => void
   onSave: () => void
 }
 export function AppHeader({
@@ -24,6 +27,8 @@ export function AppHeader({
   planPath,
   groupCount,
   fileCount,
+  filteredShortFileCount,
+  minimumDuration,
   decidedCount,
   selectedRemovalCount,
   estimatedReclaim,
@@ -31,6 +36,7 @@ export function AppHeader({
   canUndo,
   saving,
   onUndo,
+  onOpenSettings,
   onSave,
 }: AppHeaderProps) {
   const progress = groupCount ? (decidedCount / groupCount) * 100 : 0
@@ -67,6 +73,11 @@ export function AppHeader({
           <div>
             <dt className="text-slate-400">Files in review</dt>
             <dd className="mt-0.5 font-mono font-semibold text-slate-100">{fileCount.toLocaleString()}</dd>
+            {filteredShortFileCount > 0 ? (
+              <dd className="mt-0.5 text-xs text-slate-400">
+                {filteredShortFileCount.toLocaleString()} clips under {minimumDuration.toLocaleString()} sec hidden
+              </dd>
+            ) : null}
           </div>
           <div>
             <dt className="text-slate-400">Selected removals</dt>
@@ -81,6 +92,16 @@ export function AppHeader({
         </dl>
 
         <div className="order-2 ml-auto flex w-full items-center justify-end gap-2 sm:w-auto">
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            disabled={saving}
+            onClick={onOpenSettings}
+            className="text-slate-300 hover:bg-slate-800 hover:text-white"
+          >
+            <Settings2 className="mr-2 h-4 w-4" aria-hidden="true" /> Settings
+          </Button>
           <Button
             type="button"
             size="sm"

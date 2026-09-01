@@ -4,13 +4,21 @@ import { toast, Toaster } from 'sonner'
 
 import { AppHeader } from '@/components/AppHeader'
 import { BulkToolbar } from '@/components/BulkToolbar'
+import { DetectionSettingsDialog } from '@/components/DetectionSettingsDialog'
 import { ReviewSidebar } from '@/components/ReviewSidebar'
 import { ReviewWorkspace } from '@/components/ReviewWorkspace'
 import { SavePlanDialog } from '@/components/SavePlanDialog'
 import { Button } from '@/components/ui/button'
-import { fetchRecommendations, fetchSession, savePlan } from '@/lib/api'
+import {
+  fetchRecommendations,
+  fetchRescanStatus,
+  fetchSession,
+  savePlan,
+  startRescan,
+  updateSettings,
+} from '@/lib/api'
 import { formatBytes } from '@/lib/format'
-import type { Decision, FilterStatus, SessionPayload, Strategy } from '@/types'
+import type { Decision, DetectionSettings, FilterStatus, RescanStatus, SessionPayload, Strategy } from '@/types'
 
 type ReviewState = {
   decisions: Map<number, Decision>
@@ -62,6 +70,9 @@ function App() {
   const [recommending, setRecommending] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saveDialogOpen, setSaveDialogOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [applyingSettings, setApplyingSettings] = useState(false)
+  const [rescanStatus, setRescanStatus] = useState<RescanStatus>({ state: 'idle' })
   const [review, dispatch] = useReducer(reviewReducer, {
     decisions: new Map(),
     history: [],
@@ -87,6 +98,27 @@ function App() {
       cancelled = true
     }
   }, [])
+
+  useEffect(() => {
+    if (rescanStatus.state !== 'running') return
+    const timer = window.setInterval(() => {
+      fetchRescanStatus()
+        .then(async (status) => {
+          setRescanStatus(status)
+          if (status.state !== 'completed') return
+          const payload = await fetchSession()
+          setSession(payload)
+          dispatch({ type: 'hydrate', decisions: payload.initialDecisions })
+          setSelectedGroupIds(new Set())
+          setActiveGroupId(payload.groups[0]?.id ?? 1)
+          toast.success('Rescan complete', { description: 'The review now uses the updated detection settings.' })
+        })
+        .catch((error: unknown) => {
+          setRescanStatus({ state: 'failed', message: error instanceof Error ? error.message : 'Could not read rescan status.' })
+        })
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [rescanStatus.state])
 
   useEffect(() => {
     function warnBeforeClose(event: BeforeUnloadEvent) {
@@ -177,6 +209,38 @@ function App() {
     }
   }
 
+  async function applyReviewSettings(settings: Omit<DetectionSettings, 'rescanAvailable' | 'reportMinimumDuplicatePercent'>) {
+    setApplyingSettings(true)
+    try {
+      const payload = await updateSettings(settings)
+      setSession(payload)
+      dispatch({ type: 'hydrate', decisions: payload.initialDecisions })
+      setSelectedGroupIds(new Set())
+      setActiveGroupId(payload.groups[0]?.id ?? 1)
+      toast.success('Review settings applied', {
+        description: `${payload.summary.groupCount.toLocaleString()} duplicate sets match the current filters.`,
+      })
+    } catch (error) {
+      toast.error('Settings were not applied', {
+        description: error instanceof Error ? error.message : 'Unknown error',
+      })
+    } finally {
+      setApplyingSettings(false)
+    }
+  }
+
+  async function rescanWithSettings(settings: Omit<DetectionSettings, 'rescanAvailable' | 'reportMinimumDuplicatePercent'>) {
+    try {
+      const status = await startRescan(settings)
+      setRescanStatus(status)
+      toast.info('Rescan started', { description: 'Cached fingerprints will be reused when possible.' })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      setRescanStatus({ state: 'failed', message })
+      toast.error('Rescan could not start', { description: message })
+    }
+  }
+
   if (loadError) {
     return (
       <div className="flex min-h-dvh items-center justify-center bg-[#f4f1ea] p-6">
@@ -192,7 +256,7 @@ function App() {
     )
   }
 
-  if (!session || !activeGroup) {
+  if (!session) {
     return (
       <div className="flex min-h-dvh items-center justify-center bg-slate-950 text-slate-300">
         <div className="text-center">
@@ -210,6 +274,8 @@ function App() {
         planPath={session.planPath}
         groupCount={session.summary.groupCount}
         fileCount={session.summary.fileCount}
+        filteredShortFileCount={session.summary.filteredShortFileCount}
+        minimumDuration={session.minimumDuration}
         decidedCount={review.decisions.size}
         selectedRemovalCount={selectedRemovalCount}
         estimatedReclaim={estimatedReclaim}
@@ -217,10 +283,11 @@ function App() {
         canUndo={review.history.length > 0}
         saving={saving}
         onUndo={() => dispatch({ type: 'undo' })}
+        onOpenSettings={() => setSettingsOpen(true)}
         onSave={() => setSaveDialogOpen(true)}
       />
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[22rem_auto] lg:grid-cols-[370px_minmax(0,1fr)] lg:grid-rows-1">
+      {activeGroup ? <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[22rem_auto] lg:grid-cols-[370px_minmax(0,1fr)] lg:grid-rows-1">
         <ReviewSidebar
           groups={session.groups}
           decisions={review.decisions}
@@ -274,7 +341,31 @@ function App() {
             onNavigate={setActiveGroupId}
           />
         </div>
-      </div>
+      </div> : (
+        <main className="flex flex-1 items-center justify-center p-6">
+          <div className="max-w-xl border border-stone-300 bg-white p-8 text-center shadow-sm" role="status">
+            <AlertCircle className="mx-auto h-9 w-9 text-amber-700" aria-hidden="true" />
+            <h2 className="mt-4 text-xl font-semibold text-slate-950">No matches meet these settings</h2>
+            <p className="mt-2 text-base leading-relaxed text-slate-600">
+              Lower the minimum duplicated timeline or minimum duration in Settings to bring more pairs back into review.
+            </p>
+            <Button type="button" className="mt-5" onClick={() => setSettingsOpen(true)}>
+              Adjust settings
+            </Button>
+          </div>
+        </main>
+      )}
+
+      {settingsOpen ? <DetectionSettingsDialog
+        open={settingsOpen}
+        settings={session.settings}
+        applying={applyingSettings}
+        hasUnsavedChanges={review.dirty}
+        rescanStatus={rescanStatus}
+        onOpenChange={setSettingsOpen}
+        onApplyReviewSettings={(settings) => void applyReviewSettings(settings)}
+        onRescan={(settings) => void rescanWithSettings(settings)}
+      /> : null}
 
       <SavePlanDialog
         open={saveDialogOpen}

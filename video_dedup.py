@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Iterable, Iterator, Sequence
 
 VERSION = "1.5.0"
+DEFAULT_MINIMUM_VIDEO_DURATION = 10.0
 FRAME_WIDTH = 9
 FRAME_HEIGHT = 8
 FRAME_BYTES = FRAME_WIDTH * FRAME_HEIGHT
@@ -1055,6 +1056,23 @@ def exact_matches(
     return matches
 
 
+def filter_duplicate_matches(
+    matches: Sequence[dict], minimum_percent: float
+) -> tuple[list[dict], int]:
+    """Keep pairs where either video's timeline meets the requested coverage."""
+    eligible = [
+        match
+        for match in matches
+        if max(
+            float(match.get("a_duplicated_percent", 100.0 if match.get("kind") == "exact" else 0.0)),
+            float(match.get("b_duplicated_percent", 100.0 if match.get("kind") == "exact" else 0.0)),
+        )
+        + 1e-9
+        >= minimum_percent
+    ]
+    return eligible, len(matches) - len(eligible)
+
+
 def load_detailed_records(
     videos: Sequence[VideoRecord],
     video_ids: Sequence[int],
@@ -1132,6 +1150,23 @@ def scan(args: argparse.Namespace) -> int:
         )
         if not videos:
             raise DedupError("Every discovered video failed to decode")
+        short_video_count = sum(
+            video.duration < args.min_duration for video in videos
+        )
+        if short_video_count:
+            log(
+                f"Ignoring {short_video_count:,} video(s) shorter than "
+                f"{args.min_duration:g} seconds"
+            )
+            videos = [
+                video for video in videos if video.duration >= args.min_duration
+            ]
+            for video_id, video in enumerate(videos):
+                video.id = video_id
+        if not videos:
+            raise DedupError(
+                f"No videos are at least {args.min_duration:g} seconds long"
+            )
         exact_groups = compute_exact_groups(videos, args.workers, cache, failures)
         exact_pair_keys = {
             (group[left], group[right])
@@ -1176,13 +1211,16 @@ def scan(args: argparse.Namespace) -> int:
                 args.hash_distance,
                 args.min_segment,
             )
-            if result:
+            if result and max(
+                result["a_duplicated_percent"], result["b_duplicated_percent"]
+            ) + 1e-9 >= args.min_duplicate_percent:
                 matches.append(result)
             if number % 1000 == 0:
                 log(f"Pair verification: {number:,}/{len(likely):,}")
         summary: dict[str, object] = {
             "discovered_files": len(paths),
             "scanned_files": len(videos),
+            "short_files_filtered": short_video_count,
             "failed_files": len(failures),
             "candidate_pairs": len(candidates),
             "verified_pairs": len(likely),
@@ -1203,7 +1241,18 @@ def scan(args: argparse.Namespace) -> int:
                 "depth": args.depth,
                 "sample_interval_seconds": args.sample_interval,
                 "minimum_segment_seconds": args.min_segment,
+                "minimum_video_duration_seconds": args.min_duration,
+                "minimum_duplicate_percent": args.min_duplicate_percent,
                 "hash_distance": args.hash_distance,
+                "cache_path": str(Path(args.cache).expanduser().resolve()),
+                "workers": args.workers,
+                "candidate_tokens": args.candidate_tokens,
+                "candidate_shared": args.candidate_shared,
+                "max_token_frequency": args.max_token_frequency,
+                "max_candidates_per_video": args.max_candidates_per_video,
+                "max_fast_frames": args.max_fast_frames,
+                "extensions": args.extensions,
+                "follow_symlinks": args.follow_symlinks,
             },
             "summary": summary,
             "files": [video.public() for video in videos],
@@ -1262,12 +1311,56 @@ def connected_components(
     )
 
 
+def filter_short_videos(
+    files: dict[int, dict], matches: Sequence[dict], minimum_duration: float
+) -> tuple[dict[int, dict], list[dict], int]:
+    """Remove short video files and every match connected to them."""
+    eligible_ids = {
+        file_id
+        for file_id, item in files.items()
+        if float(item.get("duration_seconds") or 0.0) >= minimum_duration
+    }
+    filtered_matches = [
+        match
+        for match in matches
+        if int(match["a_id"]) in eligible_ids and int(match["b_id"]) in eligible_ids
+    ]
+    return (
+        {file_id: item for file_id, item in files.items() if file_id in eligible_ids},
+        filtered_matches,
+        len(files) - len(eligible_ids),
+    )
+
+
 def relation_bins(match: dict, file_id: int, sample_count: int) -> set[int]:
     if match["kind"] == "exact":
         return set(range(sample_count))
     if int(match["a_id"]) == file_id:
         return expand_ranges(match.get("a_sample_ranges") or [])
     return expand_ranges(match.get("b_sample_ranges") or [])
+
+
+def duplicate_time_ranges(
+    file_id: int,
+    matches: Sequence[dict],
+    duration: float,
+    interval: float,
+    sample_count: int | None = None,
+) -> list[dict[str, float]]:
+    """Return merged, timeline-ready ranges duplicated by any related file."""
+    effective_sample_count = sample_count or max(1, math.ceil(duration / interval))
+    bins: set[int] = set()
+    for match in matches:
+        if file_id in {int(match["a_id"]), int(match["b_id"])}:
+            bins.update(relation_bins(match, file_id, effective_sample_count))
+    return [
+        {
+            "startSeconds": round(max(0.0, start * interval), 3),
+            "endSeconds": round(min(duration, (end + 1) * interval), 3),
+        }
+        for start, end in compress_ranges(bins)
+        if start * interval < duration
+    ]
 
 
 def covered_by(
@@ -1842,9 +1935,25 @@ class WebReviewState:
     interval: float
     roots: list[str]
     minimum_coverage: float
+    minimum_duration: float = 0.0
+    filtered_short_file_count: int = 0
     decisions: dict[int, ReviewDecision] = field(default_factory=dict)
+    minimum_duplicate_percent: float = 0.0
+    report_minimum_duplicate_percent: float = 0.0
+    hash_distance: int = 20
+    minimum_segment: float = 9.0
+    scan_options: dict = field(default_factory=dict, repr=False)
     group_matches: dict[int, list[dict]] = field(init=False, repr=False)
     group_payloads: list[dict] = field(init=False, repr=False)
+    source_files: dict[int, dict] = field(init=False, repr=False)
+    source_matches: list[dict] = field(init=False, repr=False)
+    filtered_match_count: int = field(default=0, init=False)
+    rescan_status: dict = field(
+        default_factory=lambda: {"state": "idle"}, init=False, repr=False
+    )
+    rescan_lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False
+    )
     save_lock: threading.Lock = field(
         default_factory=threading.Lock,
         init=False,
@@ -1852,6 +1961,24 @@ class WebReviewState:
     )
 
     def __post_init__(self) -> None:
+        self.source_files = dict(self.files)
+        self.source_matches = list(self.matches)
+        self._rebuild_review_data()
+
+    def _rebuild_review_data(self) -> None:
+        self.files, duration_matches, self.filtered_short_file_count = filter_short_videos(
+            self.source_files, self.source_matches, self.minimum_duration
+        )
+        self.matches, self.filtered_match_count = filter_duplicate_matches(
+            duration_matches, self.minimum_duplicate_percent
+        )
+        self.groups = connected_components(self.files, self.matches)
+        self.decisions = {
+            group_number: decision
+            for group_number, decision in self.decisions.items()
+            if 1 <= group_number <= len(self.groups)
+            and decision.keepers.issubset(set(self.groups[group_number - 1]))
+        }
         self.group_matches = {
             group_number: group_matches_for(group, self.matches)
             for group_number, group in enumerate(self.groups, 1)
@@ -1883,6 +2010,13 @@ class WebReviewState:
                         "height": int(item.get("height") or 0),
                         "codec": str(item.get("codec") or "unknown"),
                         "coveredPercent": round(coverage, 2),
+                        "duplicateRanges": duplicate_time_ranges(
+                            file_id,
+                            group_matches,
+                            float(item["duration_seconds"]),
+                            self.interval,
+                            int(item.get("detailed_sample_count") or 0) or None,
+                        ),
                         "videoUrl": (
                             f"/api/video/{file_id}"
                             if direct_preview
@@ -1899,6 +2033,170 @@ class WebReviewState:
                     "files": file_payloads,
                 }
             )
+
+    @staticmethod
+    def _percentage(value: object, label: str) -> float:
+        try:
+            parsed = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{label} must be a number from 0 to 100.") from exc
+        if not math.isfinite(parsed) or not 0 <= parsed <= 100:
+            raise ValueError(f"{label} must be a number from 0 to 100.")
+        return parsed
+
+    def update_settings(self, payload: dict) -> dict:
+        minimum_coverage = self._percentage(
+            payload.get("minimumDeleteCoverage"), "Minimum delete coverage"
+        )
+        minimum_duplicate_percent = self._percentage(
+            payload.get("minimumDuplicatePercent"), "Minimum duplicate percentage"
+        )
+        try:
+            minimum_duration = float(payload.get("minimumDuration"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Minimum video duration must be zero or greater.") from exc
+        if not math.isfinite(minimum_duration) or minimum_duration < 0:
+            raise ValueError("Minimum video duration must be zero or greater.")
+        if minimum_duplicate_percent + 1e-9 < self.report_minimum_duplicate_percent:
+            raise ValueError(
+                "Lowering the duplicate percentage below the report's scan threshold requires a rescan."
+            )
+        self.minimum_coverage = minimum_coverage
+        self.minimum_duplicate_percent = minimum_duplicate_percent
+        self.minimum_duration = minimum_duration
+        self._rebuild_review_data()
+        return self.session_payload()
+
+    def _rescan_command(self, payload: dict) -> tuple[list[str], dict]:
+        minimum_coverage = self._percentage(
+            payload.get("minimumDeleteCoverage"), "Minimum delete coverage"
+        )
+        minimum_duplicate_percent = self._percentage(
+            payload.get("minimumDuplicatePercent"), "Minimum duplicate percentage"
+        )
+        try:
+            minimum_duration = float(payload.get("minimumDuration"))
+            sample_interval = float(payload.get("sampleInterval"))
+            minimum_segment = float(payload.get("minimumSegment"))
+            hash_distance = int(payload.get("hashDistance"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Scan settings contain an invalid number.") from exc
+        if not math.isfinite(minimum_duration) or minimum_duration < 0:
+            raise ValueError("Minimum video duration must be zero or greater.")
+        if not math.isfinite(sample_interval) or sample_interval <= 0:
+            raise ValueError("Sample interval must be greater than zero.")
+        if not math.isfinite(minimum_segment) or minimum_segment <= 0:
+            raise ValueError("Minimum matching segment must be greater than zero.")
+        if not 0 <= hash_distance <= 136:
+            raise ValueError("Watermark tolerance must be between 0 and 136.")
+        if not self.roots:
+            raise ValueError("This report does not contain scan roots, so it cannot be rescanned from the UI.")
+
+        cache_path = str(
+            self.scan_options.get("cache_path")
+            or (self.report_path.parent / ".video-dedup-cache.sqlite3")
+        )
+        command = [
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "scan",
+            *self.roots,
+            "--depth",
+            str(int(self.scan_options.get("depth", 2))),
+            "--report",
+            str(self.report_path),
+            "--cache",
+            cache_path,
+            "--workers",
+            str(int(self.scan_options.get("workers", min(4, max(1, os.cpu_count() or 1))))),
+            "--sample-interval",
+            f"{sample_interval:g}",
+            "--min-duration",
+            f"{minimum_duration:g}",
+            "--min-segment",
+            f"{minimum_segment:g}",
+            "--min-duplicate-percent",
+            f"{minimum_duplicate_percent:g}",
+            "--hash-distance",
+            str(hash_distance),
+            "--candidate-tokens",
+            str(int(self.scan_options.get("candidate_tokens", 512))),
+            "--candidate-shared",
+            str(int(self.scan_options.get("candidate_shared", 2))),
+            "--max-token-frequency",
+            str(int(self.scan_options.get("max_token_frequency", 200))),
+            "--max-candidates-per-video",
+            str(int(self.scan_options.get("max_candidates_per_video", 50))),
+            "--max-fast-frames",
+            str(int(self.scan_options.get("max_fast_frames", 2000))),
+            "--extensions",
+            str(self.scan_options.get("extensions") or ",".join(sorted(DEFAULT_EXTENSIONS))),
+        ]
+        if bool(self.scan_options.get("follow_symlinks")):
+            command.append("--follow-symlinks")
+        settings = {
+            "minimumDeleteCoverage": minimum_coverage,
+            "minimumDuplicatePercent": minimum_duplicate_percent,
+            "minimumDuration": minimum_duration,
+            "sampleInterval": sample_interval,
+            "minimumSegment": minimum_segment,
+            "hashDistance": hash_distance,
+        }
+        return command, settings
+
+    def start_rescan(self, payload: dict) -> dict:
+        command, settings = self._rescan_command(payload)
+        with self.rescan_lock:
+            if self.rescan_status.get("state") == "running":
+                raise ValueError("A rescan is already running.")
+            self.rescan_status = {"state": "running", "message": "Scanning the configured folders…"}
+
+        def run_rescan() -> None:
+            try:
+                completed = subprocess.run(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
+                )
+                if completed.returncode:
+                    message = completed.stderr.strip().splitlines()[-1:] or completed.stdout.strip().splitlines()[-1:]
+                    raise DedupError(message[0] if message else f"Scan exited with code {completed.returncode}.")
+                _, report = load_json(str(self.report_path))
+                report_settings = report.get("settings") or {}
+                self.source_files = {
+                    int(item["id"]): item for item in report.get("files") or []
+                }
+                self.source_matches = list(report.get("matches") or [])
+                self.roots = [str(root) for root in report_settings.get("roots") or self.roots]
+                self.scan_options = dict(report_settings)
+                self.interval = settings["sampleInterval"]
+                self.minimum_segment = settings["minimumSegment"]
+                self.hash_distance = settings["hashDistance"]
+                self.minimum_coverage = settings["minimumDeleteCoverage"]
+                self.minimum_duplicate_percent = settings["minimumDuplicatePercent"]
+                self.report_minimum_duplicate_percent = settings["minimumDuplicatePercent"]
+                self.minimum_duration = settings["minimumDuration"]
+                self.decisions = {}
+                self._rebuild_review_data()
+                with self.rescan_lock:
+                    self.rescan_status = {
+                        "state": "completed",
+                        "message": "Rescan complete. Review data has been refreshed.",
+                    }
+            except Exception as exc:
+                with self.rescan_lock:
+                    self.rescan_status = {"state": "failed", "message": str(exc)}
+
+        threading.Thread(target=run_rescan, daemon=True, name="video-dedup-rescan").start()
+        return self.get_rescan_status()
+
+    def get_rescan_status(self) -> dict:
+        with self.rescan_lock:
+            return dict(self.rescan_status)
 
     def session_payload(self) -> dict:
         initial_decisions = []
@@ -1918,6 +2216,17 @@ class WebReviewState:
             "reportPath": str(self.report_path),
             "planPath": str(self.plan_path),
             "minimumCoverage": self.minimum_coverage,
+            "minimumDuration": self.minimum_duration,
+            "settings": {
+                "minimumDuplicatePercent": self.minimum_duplicate_percent,
+                "reportMinimumDuplicatePercent": self.report_minimum_duplicate_percent,
+                "minimumDeleteCoverage": self.minimum_coverage,
+                "minimumDuration": self.minimum_duration,
+                "sampleInterval": self.interval,
+                "minimumSegment": self.minimum_segment,
+                "hashDistance": self.hash_distance,
+                "rescanAvailable": bool(self.roots),
+            },
             "summary": {
                 "groupCount": len(self.groups),
                 "fileCount": files_in_groups,
@@ -1928,6 +2237,8 @@ class WebReviewState:
                     for group in self.groups
                     for file_id in group
                 ),
+                "filteredShortFileCount": self.filtered_short_file_count,
+                "filteredMatchCount": self.filtered_match_count,
             },
             "groups": self.group_payloads,
             "initialDecisions": initial_decisions,
@@ -2025,6 +2336,7 @@ class WebReviewState:
             "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
             "source_report": str(self.report_path),
             "minimum_delete_coverage": self.minimum_coverage,
+            "minimum_video_duration_seconds": self.minimum_duration,
             "strategy": "web",
             "decisions": _decision_payload(self.groups, complete_decisions, self.files),
             "actions": actions,
@@ -2281,6 +2593,8 @@ def make_web_review_handler(
                 self.end_headers()
             elif path_value == "/api/session":
                 self._send_json(state.session_payload())
+            elif path_value == "/api/rescan-status":
+                self._send_json(state.get_rescan_status())
             elif path_value.startswith("/api/video/"):
                 self._serve_video(path_value)
             elif path_value.startswith("/api/preview/"):
@@ -2313,6 +2627,10 @@ def make_web_review_handler(
                     self._send_json({"ok": True, "decisions": result})
                 elif path_value == "/api/plan":
                     self._send_json(state.save_plan(payload.get("decisions")))
+                elif path_value == "/api/settings":
+                    self._send_json(state.update_settings(payload))
+                elif path_value == "/api/rescan":
+                    self._send_json(state.start_rescan(payload), status=202)
                 else:
                     self._send_error_json(404, "Not found.")
             except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
@@ -2331,10 +2649,21 @@ def web_review(args: argparse.Namespace) -> int:
         print("No duplicate matches were found; web review was not started.")
         return 0
     groups = connected_components(files, matches)
-    interval = float(
-        (report.get("settings") or {}).get("sample_interval_seconds") or 3.0
+    report_settings = report.get("settings") or {}
+    interval = float(report_settings.get("sample_interval_seconds") or 3.0)
+    roots = [str(root) for root in report_settings.get("roots") or []]
+    report_minimum_duplicate_percent = float(
+        report_settings.get("minimum_duplicate_percent") or 0.0
     )
-    roots = [str(root) for root in (report.get("settings") or {}).get("roots") or []]
+    minimum_duplicate_percent = (
+        float(args.min_duplicate_percent)
+        if args.min_duplicate_percent is not None
+        else report_minimum_duplicate_percent
+    )
+    if minimum_duplicate_percent + 1e-9 < report_minimum_duplicate_percent:
+        raise DedupError(
+            "Lowering --min-duplicate-percent below the report's scan threshold requires a rescan."
+        )
     plan_path = Path(args.plan).expanduser().resolve()
     decisions = (
         load_review_decisions(str(plan_path), report_path, groups, files)
@@ -2355,7 +2684,13 @@ def web_review(args: argparse.Namespace) -> int:
         interval,
         roots,
         args.minimum_delete_coverage,
-        decisions,
+        minimum_duration=args.min_duration,
+        decisions=decisions,
+        minimum_duplicate_percent=minimum_duplicate_percent,
+        report_minimum_duplicate_percent=report_minimum_duplicate_percent,
+        hash_distance=int(report_settings.get("hash_distance") or 20),
+        minimum_segment=float(report_settings.get("minimum_segment_seconds") or 9.0),
+        scan_options=dict(report_settings),
     )
     try:
         server = http.server.ThreadingHTTPServer(
@@ -2390,8 +2725,37 @@ def review(args: argparse.Namespace) -> int:
     report_path, report = load_json(args.report)
     files = {int(item["id"]): item for item in report.get("files") or []}
     matches = report.get("matches") or []
+    files, matches, filtered_short_file_count = filter_short_videos(
+        files, matches, args.min_duration
+    )
+    report_settings = report.get("settings") or {}
+    report_minimum_duplicate_percent = float(
+        report_settings.get("minimum_duplicate_percent") or 0.0
+    )
+    minimum_duplicate_percent = (
+        float(args.min_duplicate_percent)
+        if args.min_duplicate_percent is not None
+        else report_minimum_duplicate_percent
+    )
+    if minimum_duplicate_percent + 1e-9 < report_minimum_duplicate_percent:
+        raise DedupError(
+            "Lowering --min-duplicate-percent below the report's scan threshold requires a rescan."
+        )
+    matches, filtered_match_count = filter_duplicate_matches(
+        matches, minimum_duplicate_percent
+    )
+    if filtered_short_file_count:
+        print(
+            f"Ignoring {filtered_short_file_count:,} video(s) shorter than "
+            f"{args.min_duration:g} seconds."
+        )
+    if filtered_match_count:
+        print(
+            f"Ignoring {filtered_match_count:,} match(es) below "
+            f"{minimum_duplicate_percent:g}% duplicated."
+        )
     if not matches:
-        print("No duplicate matches were found; no plan was created.")
+        print("No eligible duplicate matches were found; no plan was created.")
         return 0
     interval = float(
         (report.get("settings") or {}).get("sample_interval_seconds") or 3.0
@@ -2493,6 +2857,8 @@ def review(args: argparse.Namespace) -> int:
         "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "source_report": str(report_path),
         "minimum_delete_coverage": args.minimum_delete_coverage,
+        "minimum_video_duration_seconds": args.min_duration,
+        "minimum_duplicate_percent": minimum_duplicate_percent,
         "strategy": "batch" if args.batch or args.edit_plan else args.strategy,
         "decisions": _decision_payload(groups, decisions, files),
         "actions": actions,
@@ -2651,10 +3017,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Seconds between confirmation frames (default: 3).",
     )
     scan_parser.add_argument(
+        "--min-duration",
+        type=float,
+        default=DEFAULT_MINIMUM_VIDEO_DURATION,
+        help="Ignore videos shorter than this many seconds (default: 10).",
+    )
+    scan_parser.add_argument(
         "--min-segment",
         type=float,
         default=9.0,
         help="Smallest duplicated segment to report, in seconds (default: 9).",
+    )
+    scan_parser.add_argument(
+        "--min-duplicate-percent",
+        type=float,
+        default=0.0,
+        help="Only report pairs where either video meets this duplicated percentage (default: 0).",
     )
     scan_parser.add_argument(
         "--hash-distance",
@@ -2730,6 +3108,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Only plan removal when selected keepers cover at least this percentage (default: 95).",
     )
     review_parser.add_argument(
+        "--min-duration",
+        type=float,
+        default=DEFAULT_MINIMUM_VIDEO_DURATION,
+        help="Hide videos shorter than this many seconds (default: 10).",
+    )
+    review_parser.add_argument(
+        "--min-duplicate-percent",
+        type=float,
+        default=None,
+        help="Hide pairs below this directional duplicate percentage (default: report setting).",
+    )
+    review_parser.add_argument(
         "--batch",
         action="store_true",
         help="Open a batch command shell for range edits, undo, and compact review.",
@@ -2755,6 +3145,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=95.0,
         help="Only plan removal when selected keepers cover at least this percentage (default: 95).",
+    )
+    web_review_parser.add_argument(
+        "--min-duration",
+        type=float,
+        default=DEFAULT_MINIMUM_VIDEO_DURATION,
+        help="Hide videos shorter than this many seconds (default: 10).",
+    )
+    web_review_parser.add_argument(
+        "--min-duplicate-percent",
+        type=float,
+        default=None,
+        help="Hide pairs below this directional duplicate percentage (default: report setting).",
     )
     web_review_parser.add_argument(
         "--host",
@@ -2802,10 +3204,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         or getattr(args, "min_segment", 1.0) <= 0
     ):
         parser.error("--sample-interval and --min-segment must be positive")
+    if getattr(args, "min_duration", 0.0) < 0:
+        parser.error("--min-duration must be zero or greater")
     if not 0 <= getattr(args, "hash_distance", 0) <= 136:
         parser.error("--hash-distance must be between 0 and 136")
     if not 0 <= getattr(args, "minimum_delete_coverage", 0) <= 100:
         parser.error("--minimum-delete-coverage must be between 0 and 100")
+    minimum_duplicate_percent = getattr(args, "min_duplicate_percent", 0.0)
+    if minimum_duplicate_percent is not None and not 0 <= minimum_duplicate_percent <= 100:
+        parser.error("--min-duplicate-percent must be between 0 and 100")
     if not 0 <= getattr(args, "port", 0) <= 65535:
         parser.error("--port must be between 0 and 65535")
     try:
