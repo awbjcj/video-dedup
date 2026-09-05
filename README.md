@@ -8,16 +8,47 @@ The tool never removes a file during scanning. A separate interactive review
 creates a JSON plan, and applying that plan moves files to a quarantine folder
 by default.
 
-## Requirements
+## Install and verify
+
+Video Dedup uses only the Python standard library. FFmpeg and FFprobe provide
+video probing and frame extraction; Node.js is needed only when changing the
+review UI. The examples below use PowerShell, but the Python commands work on
+other platforms after adjusting path syntax.
+
+### Requirements
 
 - Python 3.10+
 - `ffmpeg` and `ffprobe` on `PATH`
 
-Check the setup:
+### Install from source
+
+~~~powershell
+git clone https://github.com/awbjcj/video-dedup.git
+cd video-dedup
+~~~
+
+### Check the setup
 
 ```powershell
 python .\video_dedup.py doctor
 ```
+
+## Open source community
+
+- [Architecture](docs/architecture.md) explains the scan, review, and apply
+  boundaries and the local browser server.
+- [Contributing guide](CONTRIBUTING.md) covers setup, validation, and the
+  checked-in UI bundle.
+- [Security policy](SECURITY.md) explains how to report vulnerabilities
+  privately.
+- [Support guide](SUPPORT.md) routes questions, bugs, and feature requests.
+- [Code of Conduct](CODE_OF_CONDUCT.md) sets expectations for collaboration.
+
+Reports and plans can contain absolute paths, filenames, durations, and other
+details about a personal media library. Do not attach private videos, raw scan
+reports, or plans to a public issue; use a minimized, sanitized reproduction.
+
+Video Dedup is released under the [MIT License](LICENSE).
 
 ## Typical workflow
 

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Support guide
+    url: https://github.com/awbjcj/video-dedup/blob/master/SUPPORT.md
+    about: Read the diagnostic and privacy guidance before opening an issue.
+  - name: Report a security vulnerability privately
+    url: https://github.com/awbjcj/video-dedup/security/advisories/new
+    about: Do not disclose suspected vulnerabilities in a public issue.

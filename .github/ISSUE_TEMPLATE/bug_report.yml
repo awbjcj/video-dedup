@@ -1,0 +1,68 @@
+name: Bug report
+description: Report a reproducible problem with Video Dedup.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Video Dedup. Do not attach private video,
+        raw report, plan, cache, or quarantine files. Use a minimized,
+        sanitized reproduction instead.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Explain the observed behavior and what you expected instead.
+      placeholder: The scan reported no duplicate for two synthetic clips that differ only in encoding.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      description: Include exact commands with personal paths removed. Synthetic FFmpeg inputs are preferred.
+      placeholder: |
+        1. Create synthetic clips with FFmpeg.
+        2. Run the scan command.
+        3. Open the report with terminal review or web review.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include Video Dedup, Python, FFmpeg, operating-system, and browser versions where relevant.
+      value: |
+        Video Dedup:
+        Python:
+        FFmpeg:
+        Operating system:
+        Browser (web review only):
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - Scan and matching
+        - Terminal review or plan
+        - Browser review
+        - Apply or quarantine
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and read the relevant README section.
+          required: true
+        - label: I removed private video, path, report, and plan data from this report.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true
