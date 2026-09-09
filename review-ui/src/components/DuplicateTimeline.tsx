@@ -22,7 +22,7 @@ export function DuplicateTimeline({
   )
 
   return (
-    <div className="border-t border-slate-700 bg-slate-900 px-3 py-3 text-slate-100">
+    <div className="border-t border-slate-700 bg-[#111b2d] px-3 py-3 text-slate-100">
       <div className="mb-2 flex items-center justify-between gap-3 text-xs">
         <span className="flex items-center gap-1.5 font-semibold">
           <Copy className="h-3.5 w-3.5 text-amber-400" aria-hidden="true" />
@@ -33,7 +33,7 @@ export function DuplicateTimeline({
         </span>
       </div>
       <div
-        className="relative h-4 overflow-hidden rounded-sm border border-slate-600 bg-slate-700"
+        className="relative h-4 overflow-hidden rounded-full border border-slate-600 bg-slate-700 shadow-inner"
         aria-label={`Duplicate timeline for ${fileName}`}
       >
         {ranges.map((range, index) => {

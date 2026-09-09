@@ -268,7 +268,13 @@ function App() {
   }
 
   return (
-    <div className="flex min-h-dvh flex-col bg-[#f4f1ea] lg:h-dvh lg:min-h-[640px] lg:overflow-hidden">
+    <div className="flex min-h-dvh flex-col bg-background lg:h-dvh lg:min-h-[640px] lg:overflow-hidden">
+      <a
+        href="#review-workspace"
+        className="sr-only z-[100] rounded-md bg-white px-4 py-2 font-semibold text-slate-950 shadow-lg focus:not-sr-only focus:fixed focus:left-4 focus:top-4"
+      >
+        Skip to review workspace
+      </a>
       <AppHeader
         reportPath={session.reportPath}
         planPath={session.planPath}
@@ -287,7 +293,7 @@ function App() {
         onSave={() => setSaveDialogOpen(true)}
       />
 
-      {activeGroup ? <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[22rem_auto] lg:grid-cols-[370px_minmax(0,1fr)] lg:grid-rows-1">
+      {activeGroup ? <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[21rem_auto] lg:grid-cols-[350px_minmax(0,1fr)] lg:grid-rows-1 xl:grid-cols-[370px_minmax(0,1fr)]">
         <ReviewSidebar
           groups={session.groups}
           decisions={review.decisions}

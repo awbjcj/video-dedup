@@ -7,7 +7,7 @@
     font-family: Aptos, "Segoe UI", system-ui, sans-serif;
     color-scheme: light;
     --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
-    --background: 42 24% 96%;
+    --background: 40 20% 97%;
     --foreground: 222 47% 11%;
     --card: 0 0% 100%;
     --card-foreground: 222 47% 11%;
@@ -15,16 +15,16 @@
     --popover-foreground: 222 47% 11%;
     --primary: 222 47% 11%;
     --primary-foreground: 48 100% 96%;
-    --secondary: 40 18% 92%;
+    --secondary: 40 20% 94%;
     --secondary-foreground: 222 47% 11%;
-    --muted: 40 18% 92%;
+    --muted: 40 16% 93%;
     --muted-foreground: 215 16% 42%;
     --accent: 43 96% 56%;
     --accent-foreground: 222 47% 11%;
     --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 100%;
-    --border: 215 20% 82%;
-    --input: 215 20% 78%;
+    --border: 215 18% 84%;
+    --input: 215 18% 78%;
     --ring: 38 92% 50%;
     --radius: 0.45rem;
   }
@@ -42,6 +42,7 @@
   body {
     @apply m-0 min-w-[320px] bg-background text-foreground antialiased;
     line-height: 1.5;
+    background-image: radial-gradient(circle at top right, rgb(251 191 36 / 8%), transparent 30rem);
   }
 
   button,
@@ -62,6 +63,14 @@
   }
 }
 @layer utilities {
+  .surface-shadow {
+    box-shadow: 0 1px 2px rgb(15 23 42 / 5%), 0 10px 28px rgb(15 23 42 / 6%);
+  }
+
+  .surface-shadow-strong {
+    box-shadow: 0 2px 4px rgb(15 23 42 / 8%), 0 18px 42px rgb(15 23 42 / 10%);
+  }
+
   .font-mono {
     font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
   }

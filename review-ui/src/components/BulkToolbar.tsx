@@ -40,10 +40,10 @@ export function BulkToolbar({
   return (
     <section
       aria-label="Bulk actions"
-      className="flex flex-wrap items-center gap-3 border-b border-amber-300 bg-amber-50 px-4 py-4 lg:px-6"
+      className="flex flex-wrap items-center gap-3 border-b border-amber-200 bg-gradient-to-r from-amber-50 to-white px-4 py-4 shadow-sm lg:px-6"
     >
       <div className="mr-auto flex items-center gap-2">
-        <span className="flex h-8 min-w-8 items-center justify-center rounded-full bg-amber-400 px-2 font-mono text-sm font-bold text-slate-950">
+        <span className="flex h-9 min-w-9 items-center justify-center rounded-full bg-slate-950 px-2 font-mono text-sm font-bold text-amber-300 shadow-sm">
           {selectedCount}
         </span>
         <div>
@@ -65,14 +65,14 @@ export function BulkToolbar({
         </SelectContent>
       </Select>
       <Button type="button" size="sm" className="flex-1 sm:flex-none" onClick={onApplyStrategy} disabled={busy}>
-        <Sparkles className="mr-2 h-4 w-4" />
+        <Sparkles className="mr-2 h-4 w-4" aria-hidden="true" />
         {busy ? 'Calculating…' : 'Apply recommendation'}
       </Button>
       <Button type="button" size="sm" variant="outline" className="flex-1 sm:flex-none" onClick={onKeepAll} disabled={busy}>
-        <ShieldCheck className="mr-2 h-4 w-4" /> Keep all
+        <ShieldCheck className="mr-2 h-4 w-4" aria-hidden="true" /> Keep all
       </Button>
       <Button type="button" size="sm" variant="ghost" onClick={onClear} disabled={busy}>
-        <RotateCcw className="mr-2 h-4 w-4" /> Clear reviews
+        <RotateCcw className="mr-2 h-4 w-4" aria-hidden="true" /> Clear reviews
       </Button>
     </section>
   )

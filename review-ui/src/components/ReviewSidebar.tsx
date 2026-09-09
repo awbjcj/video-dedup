@@ -56,16 +56,16 @@ export function ReviewSidebar({
     visibleGroups.length > 0 && visibleGroups.every((group) => selectedGroupIds.has(group.id))
 
   return (
-    <aside className="flex min-h-0 flex-col border-r border-slate-800 bg-slate-950 text-slate-100">
-      <div className="border-b border-slate-800 px-4 py-5">
+    <aside className="flex min-h-0 flex-col border-r border-slate-800 bg-[#0b1323] text-slate-100">
+      <div className="border-b border-slate-800 px-4 py-4">
         <div className="mb-3 flex items-center justify-between gap-3">
           <div>
             <p className="text-sm font-semibold uppercase tracking-[0.14em] text-amber-400">
               Review queue
             </p>
-            <h2 className="mt-1 text-xl font-semibold">Duplicate sets</h2>
+            <h2 className="mt-0.5 text-xl font-semibold tracking-tight">Duplicate sets</h2>
           </div>
-          <Badge className="border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-900">
+          <Badge className="border-slate-700 bg-slate-950/70 text-slate-300 hover:bg-slate-950/70">
             {visibleGroups.length} shown
           </Badge>
         </div>
@@ -79,11 +79,11 @@ export function ReviewSidebar({
             value={query}
             onChange={(event) => onQueryChange(event.target.value)}
             placeholder="Search file or path"
-            className="border-slate-700 bg-slate-900 pl-9 text-slate-100 placeholder:text-slate-500 focus-visible:ring-amber-400"
+            className="border-slate-700 bg-slate-950/70 pl-9 text-slate-100 placeholder:text-slate-500 focus-visible:ring-amber-400"
           />
         </label>
 
-        <div className="mt-3 grid grid-cols-3 gap-1 rounded-md bg-slate-900 p-1" role="group" aria-label="Filter sets">
+        <div className="mt-3 grid grid-cols-3 gap-1 rounded-lg border border-slate-800 bg-slate-950/60 p-1" role="group" aria-label="Filter sets">
           {(['all', 'unresolved', 'decided'] as const).map((value) => (
             <Button
               key={value}
@@ -92,7 +92,7 @@ export function ReviewSidebar({
               variant="ghost"
               className={cn(
                 'h-9 px-2 capitalize text-slate-300 hover:bg-slate-800 hover:text-slate-100',
-                filter === value && 'bg-slate-700 text-white hover:bg-slate-700',
+                filter === value && 'bg-slate-700 text-white shadow-sm hover:bg-slate-700',
               )}
               aria-pressed={filter === value}
               onClick={() => onFilterChange(value)}
@@ -103,7 +103,7 @@ export function ReviewSidebar({
         </div>
       </div>
 
-      <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3 text-sm text-slate-300">
+      <div className="flex items-center justify-between border-b border-slate-800 bg-slate-950/20 px-4 py-3 text-sm text-slate-300">
         <label className="flex cursor-pointer items-center gap-2" htmlFor="select-visible-groups">
           <Checkbox
             id="select-visible-groups"
@@ -128,7 +128,7 @@ export function ReviewSidebar({
             No sets match this filter.
           </div>
         ) : (
-          <ul className="divide-y divide-slate-900">
+          <ul className="divide-y divide-slate-800/70">
             {visibleGroups.map((group) => {
               const decision = decisions.get(group.id)
               const isActive = group.id === activeGroupId
@@ -136,9 +136,9 @@ export function ReviewSidebar({
                 <li
                   key={group.id}
                   className={cn(
-                    'group flex items-start gap-3 border-l-[3px] px-3 py-4 transition-colors',
+                    'group flex items-start gap-3 border-l-[3px] px-3 py-3.5 transition-colors',
                     isActive
-                      ? 'border-l-amber-400 bg-slate-900'
+                      ? 'border-l-amber-400 bg-slate-800/80 shadow-[inset_0_1px_rgb(255_255_255_/_0.03)]'
                       : 'border-l-transparent hover:bg-slate-900/70',
                   )}
                 >
@@ -160,16 +160,16 @@ export function ReviewSidebar({
                       </span>
                       {decision ? (
                         <span className="flex items-center gap-1 text-xs font-medium text-emerald-400">
-                          <CheckCircle2 className="h-3.5 w-3.5" /> Reviewed
+                          <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" /> Reviewed
                         </span>
                       ) : (
                         <span className="flex items-center gap-1 text-xs font-medium text-slate-400">
-                          <CircleDashed className="h-3.5 w-3.5" /> Needs review
+                          <CircleDashed className="h-3.5 w-3.5" aria-hidden="true" /> Needs review
                         </span>
                       )}
                     </span>
                     <span className="mt-2 flex items-center gap-1.5 text-sm text-slate-300">
-                      <FileVideo2 className="h-3.5 w-3.5" />
+                      <FileVideo2 className="h-3.5 w-3.5" aria-hidden="true" />
                       {group.fileCount} files · {group.matchCount} matches
                     </span>
                     <span className="mt-1 block truncate text-sm text-slate-400">

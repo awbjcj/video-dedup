@@ -52,7 +52,7 @@ function NumberField({
 }: NumberFieldProps) {
   const descriptionId = `${id}-description`
   return (
-    <div className="grid gap-2 border-b border-stone-200 pb-4 last:border-0 last:pb-0 sm:grid-cols-[minmax(0,1fr)_8rem] sm:items-center">
+    <div className="grid gap-3 border-b border-stone-200 pb-4 last:border-0 last:pb-0 sm:grid-cols-[minmax(0,1fr)_8rem] sm:items-center">
       <div>
         <Label htmlFor={id} className="text-base font-semibold text-slate-900">{label}</Label>
         <p id={descriptionId} className="mt-1 text-sm leading-relaxed text-slate-600">{description}</p>
@@ -118,9 +118,9 @@ export function DetectionSettingsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[calc(100dvh-2rem)] max-w-3xl flex-col gap-0 overflow-hidden border-slate-200 bg-[#fbfaf7] p-0">
+      <DialogContent className="flex max-h-[calc(100dvh-2rem)] max-w-3xl flex-col gap-0 overflow-hidden rounded-xl border-slate-200 bg-[#fbfaf7] p-0 surface-shadow-strong">
         <DialogHeader className="shrink-0 border-b border-stone-200 px-5 py-5 sm:px-6">
-          <div className="mb-2 flex h-10 w-10 items-center justify-center rounded-md bg-amber-100 text-amber-900">
+          <div className="mb-2 flex h-10 w-10 items-center justify-center rounded-xl bg-amber-100 text-amber-900">
             <SlidersHorizontal className="h-5 w-5" aria-hidden="true" />
           </div>
           <DialogTitle>Detection and safety settings</DialogTitle>
@@ -133,7 +133,7 @@ export function DetectionSettingsDialog({
           <fieldset>
             <legend className="mb-1 text-sm font-semibold uppercase tracking-wide text-amber-800">Current review</legend>
             <p className="mb-4 text-sm text-slate-600">These settings can be applied immediately to the existing report. Lowering duplicate coverage below the report's scan threshold requires a rescan.</p>
-            <div className="space-y-4 rounded-md border border-stone-200 bg-white p-4">
+            <div className="space-y-4 rounded-xl border border-stone-200 bg-white p-4 surface-shadow">
               <NumberField
                 id="minimum-duplicate-percent"
                 label="Minimum duplicated timeline"
@@ -172,7 +172,7 @@ export function DetectionSettingsDialog({
           <fieldset>
             <legend className="mb-1 text-sm font-semibold uppercase tracking-wide text-amber-800">Scan accuracy</legend>
             <p className="mb-4 text-sm text-slate-600">Changing these values requires rescanning the report. Cached fingerprints are reused when possible.</p>
-            <div className="space-y-4 rounded-md border border-stone-200 bg-white p-4">
+            <div className="space-y-4 rounded-xl border border-stone-200 bg-white p-4 surface-shadow">
               <NumberField
                 id="watermark-tolerance"
                 label="Watermark and re-encode tolerance"
