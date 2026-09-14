@@ -1590,7 +1590,9 @@ def _decision_payload(
 ) -> list[dict]:
     payload = []
     for group_index, group in enumerate(groups, 1):
-        decision = decisions[group_index]
+        decision = decisions.get(group_index)
+        if decision is None:
+            continue
         payload.append(
             {
                 "set": group_index,
@@ -1624,6 +1626,9 @@ def load_review_decisions(
     loaded: dict[int, ReviewDecision] = {}
     stored_decisions = plan.get("decisions") or []
     for item in stored_decisions:
+        stored_method = str(item.get("method") or "")
+        if stored_method.split(":")[-1] == "web-unresolved-kept":
+            continue
         group_paths = frozenset(str(path) for path in item.get("group_paths") or [])
         target = group_by_paths.get(group_paths)
         if target is None:
@@ -2275,7 +2280,7 @@ class WebReviewState:
             )
         return recommendations
 
-    def save_plan(self, raw_decisions: object) -> dict:
+    def _parse_web_decisions(self, raw_decisions: object) -> dict[int, ReviewDecision]:
         if not isinstance(raw_decisions, list):
             raise ValueError("decisions must be a list.")
         submitted: dict[int, ReviewDecision] = {}
@@ -2312,7 +2317,12 @@ class WebReviewState:
                 [file_id for file_id in group if file_id not in keepers],
                 method,
             )
+        return submitted
 
+    def _web_plan_payload(
+        self,
+        submitted: dict[int, ReviewDecision],
+    ) -> tuple[dict, list[dict], int]:
         unresolved_count = len(self.groups) - len(submitted)
         complete_decisions = dict(submitted)
         for group_number, group in enumerate(self.groups, 1):
@@ -2338,9 +2348,12 @@ class WebReviewState:
             "minimum_delete_coverage": self.minimum_coverage,
             "minimum_video_duration_seconds": self.minimum_duration,
             "strategy": "web",
-            "decisions": _decision_payload(self.groups, complete_decisions, self.files),
+            "decisions": _decision_payload(self.groups, submitted, self.files),
             "actions": actions,
         }
+        return plan, actions, unresolved_count
+
+    def _write_plan(self, plan: dict) -> None:
         self.plan_path.parent.mkdir(parents=True, exist_ok=True)
         temporary_file = tempfile.NamedTemporaryFile(
             mode="w",
@@ -2354,17 +2367,186 @@ class WebReviewState:
         try:
             with temporary_file:
                 json.dump(plan, temporary_file, indent=2)
-            with self.save_lock:
-                os.replace(temporary_path, self.plan_path)
-                self.decisions = complete_decisions
+            os.replace(temporary_path, self.plan_path)
         finally:
             temporary_path.unlink(missing_ok=True)
+
+    def save_plan(self, raw_decisions: object) -> dict:
+        submitted = self._parse_web_decisions(raw_decisions)
+        plan, actions, unresolved_count = self._web_plan_payload(submitted)
+        with self.save_lock:
+            self._write_plan(plan)
+            self.decisions = submitted
         return {
             "ok": True,
             "planPath": str(self.plan_path),
             "actionCount": len(actions),
             "unresolvedKeptCount": unresolved_count,
             "reclaimBytes": sum(int(action["size_bytes"]) for action in actions),
+        }
+
+    def apply_reviewed(self, raw_decisions: object) -> dict:
+        submitted = self._parse_web_decisions(raw_decisions)
+        if not submitted:
+            raise ValueError("Review at least one duplicate set before applying the plan.")
+
+        original_groups = {
+            group_number: list(self.groups[group_number - 1])
+            for group_number in submitted
+        }
+        actions_by_group: dict[int, list[dict]] = {}
+        for group_number, decision in submitted.items():
+            actions = build_review_actions(
+                [original_groups[group_number]],
+                {1: decision},
+                self.files,
+                self.matches,
+                self.interval,
+                self.minimum_coverage,
+                verbose=False,
+            )
+            if actions:
+                actions_by_group[group_number] = actions
+        if not actions_by_group:
+            raise ValueError(
+                "The reviewed sets contain no coverage-safe files to quarantine."
+            )
+
+        applied: list[dict] = []
+        failures: list[dict] = []
+        completed_groups: set[int] = set()
+        moved_file_ids: set[int] = set()
+        quarantine: Path | None = None
+
+        with self.save_lock:
+            ready_groups: dict[int, list[dict]] = {}
+            for group_number, actions in actions_by_group.items():
+                group_failures = []
+                for action in actions:
+                    path = Path(str(action["path"]))
+                    try:
+                        stat = path.stat()
+                        if not path.is_file():
+                            raise DedupError("path is no longer a file")
+                        if stat.st_size != int(action["size_bytes"]) or stat.st_mtime_ns != int(
+                            action["mtime_ns"]
+                        ):
+                            raise DedupError(
+                                "file changed since the report; refusing to quarantine it"
+                            )
+                    except Exception as exc:
+                        group_failures.append(
+                            {"groupId": group_number, "path": str(path), "error": str(exc)}
+                        )
+                if group_failures:
+                    failures.extend(group_failures)
+                else:
+                    ready_groups[group_number] = actions
+
+            if ready_groups:
+                timestamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+                quarantine = self.plan_path.parent / f"video-dedup-quarantine-{timestamp}"
+                quarantine.mkdir(parents=True, exist_ok=False)
+
+            path_to_file_id = {
+                str(item["path"]): file_id for file_id, item in self.files.items()
+            }
+            for group_number, actions in ready_groups.items():
+                applied_before_group = len(applied)
+                failed = False
+                for action in actions:
+                    path = Path(str(action["path"]))
+                    try:
+                        assert quarantine is not None
+                        destination = quarantine / f"{len(applied) + 1:05d}-{path.name}"
+                        shutil.move(str(path), str(destination))
+                        applied.append(
+                            {
+                                "groupId": group_number,
+                                "source": str(path),
+                                "destination": str(destination),
+                                "sizeBytes": int(action["size_bytes"]),
+                            }
+                        )
+                        file_id = path_to_file_id.get(str(path))
+                        if file_id is not None:
+                            moved_file_ids.add(file_id)
+                    except Exception as exc:
+                        failed = True
+                        failures.append(
+                            {"groupId": group_number, "path": str(path), "error": str(exc)}
+                        )
+                if not failed and len(applied) - applied_before_group == len(actions):
+                    completed_groups.add(group_number)
+
+            hidden_file_ids = set(moved_file_ids)
+            for group_number in completed_groups:
+                hidden_file_ids.update(original_groups[group_number])
+            if hidden_file_ids:
+                self.source_files = {
+                    file_id: item
+                    for file_id, item in self.source_files.items()
+                    if file_id not in hidden_file_ids
+                }
+                self.source_matches = [
+                    match
+                    for match in self.source_matches
+                    if int(match["a_id"]) not in hidden_file_ids
+                    and int(match["b_id"]) not in hidden_file_ids
+                ]
+
+            remaining = {
+                group_number: decision
+                for group_number, decision in submitted.items()
+                if group_number not in completed_groups
+            }
+            self.decisions = {}
+            self._rebuild_review_data()
+            for new_group_number, group in enumerate(self.groups, 1):
+                group_ids = set(group)
+                for old_group_number, decision in remaining.items():
+                    old_remaining_ids = set(original_groups[old_group_number]) - moved_file_ids
+                    if not group_ids.issubset(old_remaining_ids):
+                        continue
+                    keepers = decision.keepers & group_ids
+                    if not keepers:
+                        break
+                    self.decisions[new_group_number] = ReviewDecision(
+                        keepers,
+                        [file_id for file_id in decision.removal_order if file_id in group_ids],
+                        decision.method,
+                    )
+                    break
+
+            remaining_plan, _, _ = self._web_plan_payload(self.decisions)
+            self._write_plan(remaining_plan)
+
+            result_path = self.plan_path.with_name(self.plan_path.stem + ".result.json")
+            result = {
+                "applied_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "permanent": False,
+                "partial": True,
+                "quarantine": str(quarantine) if quarantine else None,
+                "applied": applied,
+                "failures": failures,
+                "completed_sets": sorted(completed_groups),
+            }
+            result_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+
+        failed_groups = {int(item["groupId"]) for item in failures}
+        return {
+            "ok": not failures,
+            "planPath": str(self.plan_path),
+            "resultPath": str(result_path),
+            "quarantinePath": str(quarantine) if quarantine else None,
+            "reviewedSetCount": len(actions_by_group),
+            "appliedSetCount": len(completed_groups),
+            "failedSetCount": len(failed_groups),
+            "appliedFileCount": len(applied),
+            "failedFileCount": len(failures),
+            "reclaimBytes": sum(int(item["sizeBytes"]) for item in applied),
+            "failures": failures,
+            "session": self.session_payload(),
         }
 
 
@@ -2627,6 +2809,8 @@ def make_web_review_handler(
                     self._send_json({"ok": True, "decisions": result})
                 elif path_value == "/api/plan":
                     self._send_json(state.save_plan(payload.get("decisions")))
+                elif path_value == "/api/apply-reviewed":
+                    self._send_json(state.apply_reviewed(payload.get("decisions")))
                 elif path_value == "/api/settings":
                     self._send_json(state.update_settings(payload))
                 elif path_value == "/api/rescan":
@@ -2636,7 +2820,7 @@ def make_web_review_handler(
             except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
                 self._send_error_json(400, str(exc))
             except OSError as exc:
-                self._send_error_json(500, f"Could not save the plan: {exc}")
+                self._send_error_json(500, f"Could not complete the request: {exc}")
 
     return ReviewHandler
 
@@ -2665,11 +2849,6 @@ def web_review(args: argparse.Namespace) -> int:
             "Lowering --min-duplicate-percent below the report's scan threshold requires a rescan."
         )
     plan_path = Path(args.plan).expanduser().resolve()
-    decisions = (
-        load_review_decisions(str(plan_path), report_path, groups, files)
-        if plan_path.is_file()
-        else {}
-    )
     bundle_path = Path(__file__).resolve().parent / "review-ui" / "bundle.html"
     if not bundle_path.is_file():
         raise DedupError(
@@ -2685,13 +2864,16 @@ def web_review(args: argparse.Namespace) -> int:
         roots,
         args.minimum_delete_coverage,
         minimum_duration=args.min_duration,
-        decisions=decisions,
         minimum_duplicate_percent=minimum_duplicate_percent,
         report_minimum_duplicate_percent=report_minimum_duplicate_percent,
         hash_distance=int(report_settings.get("hash_distance") or 20),
         minimum_segment=float(report_settings.get("minimum_segment_seconds") or 9.0),
         scan_options=dict(report_settings),
     )
+    if plan_path.is_file():
+        state.decisions = load_review_decisions(
+            str(plan_path), report_path, state.groups, state.files
+        )
     try:
         server = http.server.ThreadingHTTPServer(
             (args.host, args.port),
@@ -2708,7 +2890,7 @@ def web_review(args: argparse.Namespace) -> int:
     print(f"Report: {report_path}")
     print(f"Plan:   {plan_path}")
     print(
-        "Nothing is removed by this server. Save a plan in the browser, then run apply separately."
+        "The browser can save plans and move reviewed removals into a timestamped quarantine."
     )
     if not args.no_browser:
         opener = threading.Timer(0.4, webbrowser.open, args=(url,))

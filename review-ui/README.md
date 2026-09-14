@@ -5,6 +5,9 @@ The browser loads duplicate sets from `/api/session`, streams browser-native
 videos from `/api/video/:id`, and live-transcodes formats such as MPEG, AVI,
 MKV, and legacy MPEG-4 to fragmented MP4 through `/api/preview/:id`. It also
 requests coverage-safe recommendations and saves plans through `/api/plan`.
+Reviewed portions of a plan can also be applied through `/api/apply-reviewed`;
+the server moves selected files into quarantine and returns a refreshed review
+session with completed sets removed.
 
 ```powershell
 pnpm install
@@ -20,5 +23,5 @@ pnpm lint
 pnpm test:browser -- http://127.0.0.1:8765/ .\.tmp-browser-output
 ```
 
-The frontend never applies a plan. File quarantine or deletion remains a
-separate CLI operation.
+The frontend applies only reviewed, coverage-safe removals and always uses a
+recoverable quarantine. Permanent deletion remains a separate CLI operation.

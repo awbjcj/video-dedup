@@ -75,6 +75,27 @@ export type SaveResult = {
   reclaimBytes: number
 }
 
+export type ApplyFailure = {
+  groupId: number
+  path: string
+  error: string
+}
+
+export type ApplyReviewedResult = {
+  ok: boolean
+  planPath: string
+  resultPath: string
+  quarantinePath: string | null
+  reviewedSetCount: number
+  appliedSetCount: number
+  failedSetCount: number
+  appliedFileCount: number
+  failedFileCount: number
+  reclaimBytes: number
+  failures: ApplyFailure[]
+  session: SessionPayload
+}
+
 export type Strategy =
   | 'delete-shallower'
   | 'delete-shorter-name'

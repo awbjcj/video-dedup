@@ -85,6 +85,11 @@ async function main() {
     const bulkRegion = page.getByRole('region', { name: 'Bulk actions' })
     await bulkRegion.getByRole('button', { name: 'Apply recommendation' }).click()
     await page.getByText('1 / 419 sets', { exact: true }).waitFor()
+    await page.getByRole('button', { name: 'Apply reviewed' }).click()
+    const applyDialog = page.getByRole('dialog', { name: 'Quarantine reviewed removals?' })
+    await applyDialog.getByText(/Unreviewed sets stay untouched/i).waitFor()
+    await applyDialog.getByText(/removed from the active plan and review queue/i).waitFor()
+    await applyDialog.getByRole('button', { name: 'Cancel' }).click()
     await page.getByRole('button', { name: 'Undo' }).click()
     await page.getByText('0 / 419 sets', { exact: true }).waitFor()
 

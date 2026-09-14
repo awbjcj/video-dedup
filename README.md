@@ -22,10 +22,10 @@ other platforms after adjusting path syntax.
 
 ### Install from source
 
-~~~powershell
+```powershell
 git clone https://github.com/awbjcj/video-dedup.git
 cd video-dedup
-~~~
+```
 
 ### Check the setup
 
@@ -96,9 +96,12 @@ apply immediately. Accuracy changes can start a safe rescan from the same dialog
 the existing fingerprint cache is reused and no video file is modified.
 
 The server listens only on `127.0.0.1` by default. It can read only video IDs
-listed in the report, and saving writes a JSON plan—it never moves or deletes a
-video. Press `Ctrl+C` in the terminal to stop it. If port 8765 is occupied, let
-the operating system choose a free port:
+listed in the report. **Save plan** writes decisions without changing videos.
+**Apply reviewed** moves coverage-safe removals from reviewed sets into a
+timestamped quarantine beside the plan. Successfully applied sets are removed
+from the active plan and review queue; refused sets remain available to retry.
+Permanent deletion remains CLI-only. Press `Ctrl+C` in the terminal to stop it.
+If port 8765 is occupied, let the operating system choose a free port:
 
 ```powershell
 python .\video_dedup.py web-review .\duplicates.json --plan .\decisions.json --port 0

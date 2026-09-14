@@ -1,4 +1,4 @@
-import type { Decision, DetectionSettings, RescanStatus, SaveResult, SessionPayload, Strategy } from '@/types'
+import type { ApplyReviewedResult, Decision, DetectionSettings, RescanStatus, SaveResult, SessionPayload, Strategy } from '@/types'
 
 async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -36,6 +36,13 @@ export async function fetchRecommendations(
 
 export function savePlan(decisions: Decision[]): Promise<SaveResult> {
   return requestJson<SaveResult>('/api/plan', {
+    method: 'POST',
+    body: JSON.stringify({ decisions }),
+  })
+}
+
+export function applyReviewed(decisions: Decision[]): Promise<ApplyReviewedResult> {
+  return requestJson<ApplyReviewedResult>('/api/apply-reviewed', {
     method: 'POST',
     body: JSON.stringify({ decisions }),
   })

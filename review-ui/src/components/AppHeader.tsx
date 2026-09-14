@@ -1,4 +1,4 @@
-import { HardDrive, Save, Settings2, ShieldCheck, Undo2, Video } from 'lucide-react'
+import { ArchiveRestore, HardDrive, Save, Settings2, ShieldCheck, Undo2, Video } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -17,9 +17,12 @@ type AppHeaderProps = {
   estimatedReclaim: number
   dirty: boolean
   canUndo: boolean
+  canApply: boolean
   saving: boolean
+  applying: boolean
   onUndo: () => void
   onOpenSettings: () => void
+  onApply: () => void
   onSave: () => void
 }
 export function AppHeader({
@@ -34,9 +37,12 @@ export function AppHeader({
   estimatedReclaim,
   dirty,
   canUndo,
+  canApply,
   saving,
+  applying,
   onUndo,
   onOpenSettings,
+  onApply,
   onSave,
 }: AppHeaderProps) {
   const progress = groupCount ? (decidedCount / groupCount) * 100 : 0
@@ -89,12 +95,12 @@ export function AppHeader({
           </div>
         </dl>
 
-        <div className="flex items-center justify-end gap-1.5 sm:ml-auto">
+        <div className="flex flex-wrap items-center justify-end gap-1.5 sm:ml-auto">
           <Button
             type="button"
             size="sm"
             variant="ghost"
-            disabled={saving}
+            disabled={saving || applying}
             onClick={onOpenSettings}
             className="text-slate-300 hover:bg-slate-800 hover:text-white"
           >
@@ -104,7 +110,7 @@ export function AppHeader({
             type="button"
             size="sm"
             variant="ghost"
-            disabled={!canUndo || saving}
+            disabled={!canUndo || saving || applying}
             onClick={onUndo}
             className="text-slate-300 hover:bg-slate-800 hover:text-white"
           >
@@ -113,7 +119,19 @@ export function AppHeader({
           <Button
             type="button"
             size="sm"
-            disabled={saving}
+            variant="outline"
+            disabled={!canApply || saving || applying}
+            onClick={onApply}
+            className="border-rose-300 bg-transparent text-rose-200 hover:bg-rose-950/50 hover:text-rose-100"
+            title="Apply the reviewed part of the plan"
+          >
+            <ArchiveRestore className="mr-2 h-4 w-4" aria-hidden="true" />
+            {applying ? 'Applying…' : 'Apply reviewed'}
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            disabled={saving || applying}
             onClick={onSave}
             className="bg-amber-400 text-slate-950 hover:bg-amber-300"
             title={`Save to ${planPath}`}

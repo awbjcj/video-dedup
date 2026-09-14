@@ -401,7 +401,8 @@ class FingerprintTests(unittest.TestCase):
             payload = json.loads(plan_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["strategy"], "web")
             self.assertEqual(payload["actions"][0]["path"], str(paths[0]))
-            self.assertEqual(len(payload["decisions"]), 3)
+            self.assertEqual(len(payload["decisions"]), 1)
+            self.assertEqual(state.session_payload()["summary"]["decidedCount"], 1)
 
             filtered_session = state.update_settings({
                 "minimumDeleteCoverage": 98,
@@ -411,6 +412,169 @@ class FingerprintTests(unittest.TestCase):
             self.assertEqual(filtered_session["summary"]["groupCount"], 0)
             self.assertEqual(filtered_session["summary"]["filteredShortFileCount"], 6)
             self.assertEqual(filtered_session["settings"]["minimumDeleteCoverage"], 98)
+
+    def test_web_review_loads_saved_decisions_after_short_video_groups_are_filtered(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            paths = [root / f"video-{index}.mp4" for index in range(6)]
+            report_path = root / "report.json"
+            plan_path = root / "plan.json"
+            report_path.write_text(json.dumps({
+                "settings": {"roots": [str(root)], "sample_interval_seconds": 1.0},
+                "files": [
+                    {
+                        "id": index,
+                        "path": str(path),
+                        "size_bytes": 10 + index,
+                        "mtime_ns": 100 + index,
+                        "duration_seconds": 5 if index in {2, 3} else 15,
+                        "width": 100,
+                        "height": 100,
+                        "detailed_sample_count": None,
+                    }
+                    for index, path in enumerate(paths)
+                ],
+                "matches": [
+                    {"a_id": 0, "b_id": 1, "kind": "exact"},
+                    {"a_id": 2, "b_id": 3, "kind": "exact"},
+                    {"a_id": 4, "b_id": 5, "kind": "exact"},
+                ],
+            }), encoding="utf-8")
+            plan_path.write_text(json.dumps({
+                "source_report": str(report_path),
+                "decisions": [
+                    {
+                        "set": 1,
+                        "group_paths": [str(paths[0]), str(paths[1])],
+                        "keeper_paths": [str(paths[1])],
+                        "removal_order_paths": [str(paths[0])],
+                        "method": "web-manual",
+                    },
+                    {
+                        "set": 2,
+                        "group_paths": [str(paths[4]), str(paths[5])],
+                        "keeper_paths": [str(paths[5])],
+                        "removal_order_paths": [str(paths[4])],
+                        "method": "web-manual",
+                    },
+                ],
+            }), encoding="utf-8")
+            server = mock.Mock()
+            server.server_address = ("127.0.0.1", 8765)
+            captured: dict[str, vd.WebReviewState] = {}
+
+            def capture_state(state: vd.WebReviewState, _bundle: bytes) -> type:
+                captured["state"] = state
+                return object
+
+            with (
+                mock.patch.object(vd, "make_web_review_handler", side_effect=capture_state),
+                mock.patch.object(vd.http.server, "ThreadingHTTPServer", return_value=server),
+            ):
+                code = vd.main([
+                    "web-review",
+                    str(report_path),
+                    "--plan",
+                    str(plan_path),
+                    "--min-duration",
+                    "10",
+                    "--no-browser",
+                ])
+
+            self.assertEqual(code, 0)
+            session = captured["state"].session_payload()
+            self.assertEqual(session["summary"]["groupCount"], 2)
+            self.assertEqual(
+                [(item["groupId"], item["keeperIds"]) for item in session["initialDecisions"]],
+                [(1, [1]), (2, [5])],
+            )
+
+    def test_web_review_applies_valid_reviewed_sets_and_keeps_failures_in_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            report_path, paths = self.write_three_group_report(root)
+            _, report = vd.load_json(str(report_path))
+            for index, item in enumerate(report["files"]):
+                paths[index].write_bytes(f"video-{index}".encode())
+                stat = paths[index].stat()
+                item["size_bytes"] = stat.st_size
+                item["mtime_ns"] = stat.st_mtime_ns
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            files = {int(item["id"]): item for item in report["files"]}
+            state = vd.WebReviewState(
+                report_path,
+                root / "plan.json",
+                files,
+                report["matches"],
+                vd.connected_components(files, report["matches"]),
+                1.0,
+                [str(root)],
+                95.0,
+            )
+            paths[2].write_bytes(b"changed-after-report")
+
+            result = state.apply_reviewed([
+                {"groupId": 1, "keeperIds": [1], "method": "web-manual"},
+                {"groupId": 2, "keeperIds": [3], "method": "web-manual"},
+            ])
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["appliedSetCount"], 1)
+            self.assertEqual(result["failedSetCount"], 1)
+            self.assertEqual(result["appliedFileCount"], 1)
+            self.assertEqual(result["failedFileCount"], 1)
+            self.assertFalse(paths[0].exists())
+            self.assertTrue(paths[1].exists())
+            self.assertTrue(paths[2].exists())
+            quarantine = Path(result["quarantinePath"])
+            self.assertEqual([path.read_bytes() for path in quarantine.iterdir()], [b"video-0"])
+
+            plan = json.loads((root / "plan.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(plan["decisions"]), 1)
+            self.assertEqual(plan["decisions"][0]["group_paths"], [str(paths[2]), str(paths[3])])
+            self.assertEqual([action["path"] for action in plan["actions"]], [str(paths[2])])
+            self.assertEqual(result["session"]["summary"]["groupCount"], 2)
+            self.assertEqual(
+                result["session"]["initialDecisions"],
+                [{"groupId": 1, "keeperIds": [3], "method": "web-manual"}],
+            )
+            apply_result = json.loads(Path(result["resultPath"]).read_text(encoding="utf-8"))
+            self.assertEqual(apply_result["completed_sets"], [1])
+            self.assertEqual(apply_result["failures"][0]["groupId"], 2)
+
+    def test_load_review_decisions_ignores_legacy_unresolved_placeholders(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            report_path, paths = self.write_three_group_report(root)
+            _, report = vd.load_json(str(report_path))
+            files = {int(item["id"]): item for item in report["files"]}
+            groups = vd.connected_components(files, report["matches"])
+            plan_path = root / "plan.json"
+            plan_path.write_text(json.dumps({
+                "source_report": str(report_path),
+                "decisions": [
+                    {
+                        "set": 1,
+                        "group_paths": [str(paths[0]), str(paths[1])],
+                        "keeper_paths": [str(paths[1])],
+                        "removal_order_paths": [str(paths[0])],
+                        "method": "web-manual",
+                    },
+                    {
+                        "set": 2,
+                        "group_paths": [str(paths[2]), str(paths[3])],
+                        "keeper_paths": [str(paths[2]), str(paths[3])],
+                        "removal_order_paths": [],
+                        "method": "edited:web-unresolved-kept",
+                    },
+                ],
+            }), encoding="utf-8")
+
+            decisions = vd.load_review_decisions(
+                str(plan_path), report_path, groups, files,
+            )
+
+            self.assertEqual(list(decisions), [1])
 
     def test_web_review_state_supports_concurrent_plan_saves(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -557,6 +721,26 @@ class FingerprintTests(unittest.TestCase):
                 recommend_payload = json.loads(recommend_response.read())
                 self.assertEqual(recommend_response.status, 200)
                 self.assertEqual(recommend_payload["decisions"][0]["groupId"], 1)
+
+                apply_body = json.dumps({"decisions": []}).encode()
+                with mock.patch.object(
+                    state,
+                    "apply_reviewed",
+                    return_value={"ok": True, "appliedSetCount": 1},
+                ) as apply_reviewed:
+                    connection.request(
+                        "POST", "/api/apply-reviewed", body=apply_body,
+                        headers={
+                            "Content-Type": "application/json",
+                            "Content-Length": str(len(apply_body)),
+                            "X-Video-Dedup-Review": "1",
+                        },
+                    )
+                    apply_response = connection.getresponse()
+                    apply_payload = json.loads(apply_response.read())
+                self.assertEqual(apply_response.status, 200)
+                self.assertEqual(apply_payload["appliedSetCount"], 1)
+                apply_reviewed.assert_called_once_with([])
 
                 settings_body = json.dumps({
                     "minimumDeleteCoverage": 97,

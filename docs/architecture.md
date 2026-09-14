@@ -80,8 +80,11 @@ media that cannot be replaced.
 
 Web review starts a Python ThreadingHTTPServer on 127.0.0.1 by default. It
 serves a self-contained browser bundle plus only the report-backed review data
-and media routes needed by the current session. The server saves plans but does
-not apply them.
+and media routes needed by the current session. The server saves plans and can
+apply the reviewed portion of a plan to a recoverable quarantine. It repeats
+the size and modification-time checks, records a result, removes successfully
+completed sets from the active plan, and leaves refused sets available to retry.
+Permanent deletion remains CLI-only.
 
 Some containers or codecs are not browser-native. For those, the local server
 uses FFmpeg to stream a fragmented MP4 preview as it is requested. This makes

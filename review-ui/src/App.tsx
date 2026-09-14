@@ -3,6 +3,7 @@ import { AlertCircle, LoaderCircle, RefreshCw } from 'lucide-react'
 import { toast, Toaster } from 'sonner'
 
 import { AppHeader } from '@/components/AppHeader'
+import { ApplyReviewedDialog } from '@/components/ApplyReviewedDialog'
 import { BulkToolbar } from '@/components/BulkToolbar'
 import { DetectionSettingsDialog } from '@/components/DetectionSettingsDialog'
 import { ReviewSidebar } from '@/components/ReviewSidebar'
@@ -10,6 +11,7 @@ import { ReviewWorkspace } from '@/components/ReviewWorkspace'
 import { SavePlanDialog } from '@/components/SavePlanDialog'
 import { Button } from '@/components/ui/button'
 import {
+  applyReviewed,
   fetchRecommendations,
   fetchRescanStatus,
   fetchSession,
@@ -70,6 +72,8 @@ function App() {
   const [recommending, setRecommending] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saveDialogOpen, setSaveDialogOpen] = useState(false)
+  const [applyingReviewed, setApplyingReviewed] = useState(false)
+  const [applyDialogOpen, setApplyDialogOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [applyingSettings, setApplyingSettings] = useState(false)
   const [rescanStatus, setRescanStatus] = useState<RescanStatus>({ state: 'idle' })
@@ -122,13 +126,13 @@ function App() {
 
   useEffect(() => {
     function warnBeforeClose(event: BeforeUnloadEvent) {
-      if (!review.dirty) return
+      if (!review.dirty && !applyingReviewed) return
       event.preventDefault()
       event.returnValue = ''
     }
     window.addEventListener('beforeunload', warnBeforeClose)
     return () => window.removeEventListener('beforeunload', warnBeforeClose)
-  }, [review.dirty])
+  }, [applyingReviewed, review.dirty])
 
   useEffect(() => {
     function saveShortcut(event: KeyboardEvent) {
@@ -157,6 +161,13 @@ function App() {
       const group = session.groups.find((item) => item.id === decision.groupId)
       return total + (group?.files.reduce((sum, file) => sum + (keepers.has(file.id) ? 0 : file.sizeBytes), 0) ?? 0)
     }, 0)
+  }, [review.decisions, session])
+  const actionableReviewedSetCount = useMemo(() => {
+    if (!session) return 0
+    return [...review.decisions.values()].filter((decision) => {
+      const group = session.groups.find((item) => item.id === decision.groupId)
+      return (group?.fileCount ?? 0) > decision.keeperIds.length
+    }).length
   }, [review.decisions, session])
 
   async function applyRecommendation(groupIds: number[], strategy: Strategy) {
@@ -206,6 +217,36 @@ function App() {
       })
     } finally {
       setSaving(false)
+    }
+  }
+
+  async function confirmApplyReviewed() {
+    setApplyingReviewed(true)
+    try {
+      const result = await applyReviewed([...review.decisions.values()])
+      setSession(result.session)
+      dispatch({ type: 'hydrate', decisions: result.session.initialDecisions })
+      setSelectedGroupIds(new Set())
+      setFilter('unresolved')
+      setActiveGroupId(result.session.groups[0]?.id ?? 1)
+      setApplyDialogOpen(false)
+      if (result.failedFileCount) {
+        toast.warning(`Applied ${result.appliedSetCount} reviewed set${result.appliedSetCount === 1 ? '' : 's'} with refusals`, {
+          description: `${result.appliedFileCount} file${result.appliedFileCount === 1 ? '' : 's'} moved; ${result.failedSetCount} set${result.failedSetCount === 1 ? '' : 's'} remain in the plan.`,
+          duration: 9000,
+        })
+      } else {
+        toast.success(`Applied and cleared ${result.appliedSetCount} reviewed set${result.appliedSetCount === 1 ? '' : 's'}`, {
+          description: `${result.appliedFileCount} file${result.appliedFileCount === 1 ? '' : 's'} moved to quarantine, reclaiming ${formatBytes(result.reclaimBytes)}.`,
+          duration: 8000,
+        })
+      }
+    } catch (error) {
+      toast.error('Reviewed sets were not applied', {
+        description: error instanceof Error ? error.message : 'Unknown error',
+      })
+    } finally {
+      setApplyingReviewed(false)
     }
   }
 
@@ -287,9 +328,12 @@ function App() {
         estimatedReclaim={estimatedReclaim}
         dirty={review.dirty}
         canUndo={review.history.length > 0}
+        canApply={actionableReviewedSetCount > 0}
         saving={saving}
+        applying={applyingReviewed}
         onUndo={() => dispatch({ type: 'undo' })}
         onOpenSettings={() => setSettingsOpen(true)}
+        onApply={() => setApplyDialogOpen(true)}
         onSave={() => setSaveDialogOpen(true)}
       />
 
@@ -383,6 +427,15 @@ function App() {
         estimatedReclaim={estimatedReclaim}
         onOpenChange={setSaveDialogOpen}
         onConfirm={() => void confirmSave()}
+      />
+      <ApplyReviewedDialog
+        open={applyDialogOpen}
+        applying={applyingReviewed}
+        reviewedSetCount={actionableReviewedSetCount}
+        removalCount={selectedRemovalCount}
+        estimatedReclaim={estimatedReclaim}
+        onOpenChange={setApplyDialogOpen}
+        onConfirm={() => void confirmApplyReviewed()}
       />
       <Toaster position="bottom-right" richColors closeButton />
     </div>
