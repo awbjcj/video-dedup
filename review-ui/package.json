@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "bundle": "parcel build index.html --dist-dir dist --no-source-maps && html-inline dist/index.html > bundle.html",
+    "test:unit": "node --experimental-strip-types --test src/lib/*.test.ts",
     "test:browser": "node scripts/browser-smoke.cjs",
     "lint": "oxlint",
     "preview": "vite preview"

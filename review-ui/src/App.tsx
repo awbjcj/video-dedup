@@ -22,6 +22,7 @@ import {
   updateSettings,
 } from '@/lib/api'
 import { formatBytes } from '@/lib/format'
+import { updateLinkedGroupSelection } from '@/lib/groupSelection'
 import { filterReviewGroups } from '@/lib/reviewGroups'
 import type { Decision, DetectionSettings, FilterStatus, RescanStatus, SessionPayload, Strategy, VideoFile } from '@/types'
 
@@ -389,22 +390,19 @@ function App() {
           onFilterChange={setFilter}
           onActivate={setActiveGroupId}
           onToggleSelected={(groupId) =>
-            setSelectedGroupIds((current) => {
-              const next = new Set(current)
-              if (next.has(groupId)) next.delete(groupId)
-              else next.add(groupId)
-              return next
-            })
+            setSelectedGroupIds((current) =>
+              updateLinkedGroupSelection(
+                session.groups,
+                current,
+                [groupId],
+                !current.has(groupId),
+              ),
+            )
           }
           onSelectVisible={(groupIds, selected) =>
-            setSelectedGroupIds((current) => {
-              const next = new Set(current)
-              groupIds.forEach((groupId) => {
-                if (selected) next.add(groupId)
-                else next.delete(groupId)
-              })
-              return next
-            })
+            setSelectedGroupIds((current) =>
+              updateLinkedGroupSelection(session.groups, current, groupIds, selected),
+            )
           }
         />
 
