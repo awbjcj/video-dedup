@@ -39,10 +39,25 @@ async function main() {
     assert.equal(await firstDuplicateSegment.evaluate((element) => document.activeElement === element), true)
     await page.waitForTimeout(750)
 
-    assert.equal(await page.getByText('419 shown', { exact: true }).count(), 1)
-    assert.equal(await page.getByText('0 / 419 sets', { exact: true }).count(), 1)
-    assert.equal(await page.getByText('1,806', { exact: true }).count(), 1)
-    assert.equal(await page.getByText('96 clips under 10 sec hidden', { exact: true }).count(), 1)
+    const initialSession = await page.evaluate(async () => {
+      const response = await fetch('/api/session')
+      if (!response.ok) throw new Error(`Session request failed with ${response.status}`)
+      return response.json()
+    })
+    let activeGroupCount = initialSession.summary.groupCount
+    assert.equal(await page.getByText(`${activeGroupCount.toLocaleString()} shown`, { exact: true }).count(), 1)
+    assert.equal(await page.getByText(`0 / ${activeGroupCount.toLocaleString()} sets`, { exact: true }).count(), 1)
+    assert.equal(
+      await page.getByText(initialSession.summary.fileCount.toLocaleString(), { exact: true }).count(),
+      1,
+    )
+    assert.equal(
+      await page.getByText(
+        `${initialSession.summary.filteredShortFileCount.toLocaleString()} clips under 10 sec hidden`,
+        { exact: true },
+      ).count(),
+      1,
+    )
 
     await page.getByRole('button', { name: 'Settings' }).click()
     const settingsDialog = page.getByRole('dialog', { name: 'Detection and safety settings' })
@@ -65,11 +80,12 @@ async function main() {
     ])
     assert.equal(await duplicateThreshold.inputValue(), '95')
     await duplicateThreshold.fill('0')
-    await Promise.all([
+    const [resetResponse] = await Promise.all([
       page.waitForResponse((response) => response.url().endsWith('/api/settings') && response.status() === 200),
       applyReviewSettings.click(),
     ])
-    await page.getByText('0 / 419 sets', { exact: true }).waitFor()
+    activeGroupCount = (await resetResponse.json()).summary.groupCount
+    await page.getByText(`0 / ${activeGroupCount.toLocaleString()} sets`, { exact: true }).waitFor()
     await settingsDialog.getByRole('button', { name: 'Close', exact: true }).last().click()
 
     const buttonCount = await page.getByRole('button').count()
@@ -84,24 +100,27 @@ async function main() {
     await page.getByRole('checkbox', { name: 'Select set 2 for bulk actions' }).click()
     const bulkRegion = page.getByRole('region', { name: 'Bulk actions' })
     await bulkRegion.getByRole('button', { name: 'Apply recommendation' }).click()
-    await page.getByText('1 / 419 sets', { exact: true }).waitFor()
+    await page.getByText(`1 / ${activeGroupCount.toLocaleString()} sets`, { exact: true }).waitFor()
     await page.getByRole('button', { name: 'Apply reviewed' }).click()
     const applyDialog = page.getByRole('dialog', { name: 'Quarantine reviewed removals?' })
     await applyDialog.getByText(/Unreviewed sets stay untouched/i).waitFor()
     await applyDialog.getByText(/removed from the active plan and review queue/i).waitFor()
     await applyDialog.getByRole('button', { name: 'Cancel' }).click()
     await page.getByRole('button', { name: 'Undo' }).click()
-    await page.getByText('0 / 419 sets', { exact: true }).waitFor()
+    await page.getByText(`0 / ${activeGroupCount.toLocaleString()} sets`, { exact: true }).waitFor()
 
     await bulkRegion.getByRole('button', { name: 'Keep all' }).click()
-    await page.getByText('1 / 419 sets', { exact: true }).waitFor()
+    await page.getByText(`1 / ${activeGroupCount.toLocaleString()} sets`, { exact: true }).waitFor()
     await page.getByRole('button', { name: 'Undo' }).click()
-    await page.getByText('0 / 419 sets', { exact: true }).waitFor()
+    await page.getByText(`0 / ${activeGroupCount.toLocaleString()} sets`, { exact: true }).waitFor()
 
     await page.getByRole('button', { name: 'Save plan' }).click()
     const dialog = page.getByRole('dialog')
     await dialog.getByRole('heading', { name: 'Save this review plan?' }).waitFor()
-    assert.match(await dialog.innerText(), /419 unreviewed sets will keep every file/i)
+    assert.match(
+      await dialog.innerText(),
+      new RegExp(`${activeGroupCount.toLocaleString()} unreviewed sets will keep every file`, 'i'),
+    )
     await dialog.getByRole('button', { name: 'Continue reviewing' }).click()
 
     const groupSearch = page.getByRole('searchbox', { name: 'Search duplicate sets' })

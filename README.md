@@ -89,6 +89,13 @@ timeline segment to jump to the matching footage. Large sets are paged so only
 twelve video players are loaded at once. If the named plan already exists, its
 decisions are resumed.
 
+Each set represents one coherent duplicated clip. If a compilation contains
+different clips that match different source videos, it appears in a separate
+set for each clip instead of merging those unrelated videos into one transitive
+set. Because that compilation can appear more than once, a removal is scheduled
+only when it is not kept in any set; coverage from keepers across its reviewed
+sets is combined and the file is listed only once in the plan.
+
 Use **Settings** in the review header to configure the minimum duplicated
 timeline, minimum video duration, deletion safety coverage, watermark/re-encode
 tolerance, frame sample interval, and minimum matching segment. Review filters

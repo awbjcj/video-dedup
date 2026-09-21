@@ -1284,31 +1284,141 @@ def load_json(path: str) -> tuple[Path, dict]:
         raise DedupError(f"Could not read JSON file {resolved}: {exc}") from exc
 
 
+class DuplicateGroup(list[int]):
+    """A clip-coherent file group with the match records that formed it."""
+
+    def __init__(self, file_ids: Iterable[int], matches: Sequence[dict]) -> None:
+        super().__init__(sorted(file_ids))
+        self.matches = list(matches)
+
+
 def connected_components(
     file_ids: Iterable[int], matches: Sequence[dict]
 ) -> list[list[int]]:
-    parent = {file_id: file_id for file_id in file_ids}
+    """Group relationships that describe the same duplicated timeline clip.
 
-    def find(value: int) -> int:
-        while parent[value] != value:
-            parent[value] = parent[parent[value]]
-            value = parent[value]
+    A plain graph component incorrectly joins unrelated clips whenever a long
+    compilation matches different videos at disjoint points on its timeline.
+    Match edges are therefore connected only when their ranges overlap on a
+    shared video. Byte-exact files are timeline aliases and are expanded into
+    every clip-specific group that contains one of them.
+    """
+    known_ids = {int(file_id) for file_id in file_ids}
+    exact_parent = {file_id: file_id for file_id in known_ids}
+
+    def exact_find(value: int) -> int:
+        while exact_parent[value] != value:
+            exact_parent[value] = exact_parent[exact_parent[value]]
+            value = exact_parent[value]
         return value
 
-    def union(left: int, right: int) -> None:
-        a, b = find(left), find(right)
-        if a != b:
-            parent[b] = a
+    def exact_union(left: int, right: int) -> None:
+        left_root, right_root = exact_find(left), exact_find(right)
+        if left_root != right_root:
+            exact_parent[right_root] = left_root
 
     for match in matches:
-        union(int(match["a_id"]), int(match["b_id"]))
-    groups: dict[int, list[int]] = defaultdict(list)
-    involved = {int(match[key]) for match in matches for key in ("a_id", "b_id")}
-    for file_id in involved:
-        groups[find(file_id)].append(file_id)
-    return sorted(
-        (sorted(group) for group in groups.values()), key=lambda group: group[0]
+        left, right = int(match["a_id"]), int(match["b_id"])
+        if left not in known_ids or right not in known_ids:
+            raise KeyError(f"Match references unknown file ids {left} and {right}")
+        if match.get("kind") == "exact":
+            exact_union(left, right)
+
+    exact_members: dict[int, set[int]] = defaultdict(set)
+    for file_id in known_ids:
+        exact_members[exact_find(file_id)].add(file_id)
+    exact_match_indexes: dict[int, set[int]] = defaultdict(set)
+    for match_index, match in enumerate(matches):
+        if match.get("kind") == "exact":
+            exact_match_indexes[exact_find(int(match["a_id"]))].add(match_index)
+
+    perceptual = [
+        (match_index, match)
+        for match_index, match in enumerate(matches)
+        if match.get("kind") != "exact"
+    ]
+    match_parent = list(range(len(perceptual)))
+
+    def match_find(value: int) -> int:
+        while match_parent[value] != value:
+            match_parent[value] = match_parent[match_parent[value]]
+            value = match_parent[value]
+        return value
+
+    def match_union(left: int, right: int) -> None:
+        left_root, right_root = match_find(left), match_find(right)
+        if left_root != right_root:
+            match_parent[right_root] = left_root
+
+    bin_owner: dict[int, dict[int, int]] = defaultdict(dict)
+    wildcard_edges: dict[int, list[int]] = defaultdict(list)
+    seen_edges: dict[int, list[int]] = defaultdict(list)
+    for edge_index, (_, match) in enumerate(perceptual):
+        processed_classes: set[int] = set()
+        for side in ("a", "b"):
+            file_id = int(match[f"{side}_id"])
+            exact_class = exact_find(file_id)
+            if exact_class in processed_classes:
+                continue
+            processed_classes.add(exact_class)
+            raw_ranges = match.get(f"{side}_sample_ranges") or []
+            bins = expand_ranges(raw_ranges) if raw_ranges else None
+            if bins is None:
+                for other_edge in seen_edges[exact_class]:
+                    match_union(edge_index, other_edge)
+                wildcard_edges[exact_class].append(edge_index)
+            else:
+                for other_edge in wildcard_edges[exact_class]:
+                    match_union(edge_index, other_edge)
+                for sample_bin in bins:
+                    other_edge = bin_owner[exact_class].get(sample_bin)
+                    if other_edge is not None:
+                        match_union(edge_index, other_edge)
+                    else:
+                        bin_owner[exact_class][sample_bin] = edge_index
+            seen_edges[exact_class].append(edge_index)
+
+    component_match_indexes: dict[int, set[int]] = defaultdict(set)
+    component_file_ids: dict[int, set[int]] = defaultdict(set)
+    component_exact_classes: dict[int, set[int]] = defaultdict(set)
+    used_exact_classes: set[int] = set()
+    for edge_index, (match_index, match) in enumerate(perceptual):
+        component = match_find(edge_index)
+        component_match_indexes[component].add(match_index)
+        for key in ("a_id", "b_id"):
+            exact_class = exact_find(int(match[key]))
+            used_exact_classes.add(exact_class)
+            component_exact_classes[component].add(exact_class)
+            component_file_ids[component].update(exact_members[exact_class])
+
+    groups_by_files: dict[frozenset[int], set[int]] = defaultdict(set)
+    for component, members in component_file_ids.items():
+        group_key = frozenset(members)
+        groups_by_files[group_key].update(component_match_indexes[component])
+        for exact_class in component_exact_classes[component]:
+            groups_by_files[group_key].update(exact_match_indexes[exact_class])
+
+    for exact_class, members in exact_members.items():
+        if len(members) < 2 or exact_class in used_exact_classes:
+            continue
+        group_key = frozenset(members)
+        groups_by_files[group_key].update(exact_match_indexes[exact_class])
+
+    ordered_keys = sorted(
+        groups_by_files,
+        key=lambda members: (min(members), len(members), tuple(sorted(members))),
     )
+    return [
+        DuplicateGroup(
+            members,
+            [
+                match
+                for match_index, match in enumerate(matches)
+                if match_index in groups_by_files[members]
+            ],
+        )
+        for members in ordered_keys
+    ]
 
 
 def filter_short_videos(
@@ -1532,6 +1642,8 @@ def parse_number_spec(value: str, maximum: int, label: str) -> list[int]:
 
 
 def group_matches_for(group: Sequence[int], matches: Sequence[dict]) -> list[dict]:
+    if isinstance(group, DuplicateGroup):
+        return list(group.matches)
     members = set(group)
     return [
         match
@@ -1892,35 +2004,45 @@ def build_review_actions(
     *,
     verbose: bool,
 ) -> list[dict]:
-    actions = []
+    keeper_ids = {
+        file_id
+        for decision in decisions.values()
+        for file_id in decision.keepers
+    }
+    removal_order = []
+    seen_removals: set[int] = set()
     for group_index, group in enumerate(groups, 1):
         decision = decisions[group_index]
-        group_matches = group_matches_for(group, matches)
         for file_id in decision.removal_order:
-            if file_id in decision.keepers:
+            if file_id in keeper_ids or file_id in seen_removals:
                 continue
-            coverage, sources = covered_by(
-                file_id, decision.keepers, group_matches, files, interval
-            )
-            if coverage + 1e-9 < minimum_coverage:
-                if verbose:
-                    print(
-                        f"  Retaining {files[file_id]['path']} (only {coverage:.1f}% covered by selected keepers)."
-                    )
-                continue
-            actions.append(
-                {
-                    "path": files[file_id]["path"],
-                    "size_bytes": files[file_id]["size_bytes"],
-                    "mtime_ns": files[file_id]["mtime_ns"],
-                    "covered_percent": round(coverage, 2),
-                    "kept_source_paths": [files[source]["path"] for source in sources],
-                }
-            )
+            seen_removals.add(file_id)
+            removal_order.append(file_id)
+
+    actions = []
+    for file_id in removal_order:
+        coverage, sources = covered_by(
+            file_id, keeper_ids, matches, files, interval
+        )
+        if coverage + 1e-9 < minimum_coverage:
             if verbose:
                 print(
-                    f"  Planned removal: {files[file_id]['path']} ({coverage:.1f}% covered)"
+                    f"  Retaining {files[file_id]['path']} (only {coverage:.1f}% covered by selected keepers)."
                 )
+            continue
+        actions.append(
+            {
+                "path": files[file_id]["path"],
+                "size_bytes": files[file_id]["size_bytes"],
+                "mtime_ns": files[file_id]["mtime_ns"],
+                "covered_percent": round(coverage, 2),
+                "kept_source_paths": [files[source]["path"] for source in sources],
+            }
+        )
+        if verbose:
+            print(
+                f"  Planned removal: {files[file_id]['path']} ({coverage:.1f}% covered)"
+            )
     return actions
 
 
@@ -2216,7 +2338,9 @@ class WebReviewState:
                     "method": decision.method,
                 }
             )
-        files_in_groups = sum(len(group) for group in self.groups)
+        grouped_file_ids = {
+            file_id for group in self.groups for file_id in group
+        }
         return {
             "reportPath": str(self.report_path),
             "planPath": str(self.plan_path),
@@ -2234,13 +2358,12 @@ class WebReviewState:
             },
             "summary": {
                 "groupCount": len(self.groups),
-                "fileCount": files_in_groups,
+                "fileCount": len(grouped_file_ids),
                 "matchCount": len(self.matches),
                 "decidedCount": len(self.decisions),
                 "totalBytes": sum(
                     int(self.files[file_id]["size_bytes"])
-                    for group in self.groups
-                    for file_id in group
+                    for file_id in grouped_file_ids
                 ),
                 "filteredShortFileCount": self.filtered_short_file_count,
                 "filteredMatchCount": self.filtered_match_count,
@@ -2391,26 +2514,54 @@ class WebReviewState:
             raise ValueError("Review at least one duplicate set before applying the plan.")
 
         original_groups = {
-            group_number: list(self.groups[group_number - 1])
+            group_number: self.groups[group_number - 1]
             for group_number in submitted
         }
-        actions_by_group: dict[int, list[dict]] = {}
-        for group_number, decision in submitted.items():
-            actions = build_review_actions(
-                [original_groups[group_number]],
-                {1: decision},
-                self.files,
-                self.matches,
-                self.interval,
-                self.minimum_coverage,
-                verbose=False,
-            )
-            if actions:
-                actions_by_group[group_number] = actions
-        if not actions_by_group:
+        complete_decisions = dict(submitted)
+        for group_number, group in enumerate(self.groups, 1):
+            if group_number not in complete_decisions:
+                complete_decisions[group_number] = ReviewDecision(
+                    set(group), [], "web-unresolved-kept"
+                )
+        actions = build_review_actions(
+            self.groups,
+            complete_decisions,
+            self.files,
+            self.matches,
+            self.interval,
+            self.minimum_coverage,
+            verbose=False,
+        )
+        path_to_file_id = {
+            str(item["path"]): file_id for file_id, item in self.files.items()
+        }
+        actions_by_file_id = {
+            path_to_file_id[str(action["path"])]: action for action in actions
+        }
+        requested_by_group = {
+            group_number: {
+                file_id
+                for file_id in decision.removal_order
+                if file_id in actions_by_file_id
+            }
+            for group_number, decision in submitted.items()
+        }
+        requested_by_group = {
+            group_number: file_ids
+            for group_number, file_ids in requested_by_group.items()
+            if file_ids
+        }
+        if not requested_by_group:
             raise ValueError(
                 "The reviewed sets contain no coverage-safe files to quarantine."
             )
+        action_requesters: dict[int, list[int]] = defaultdict(list)
+        for group_number, file_ids in requested_by_group.items():
+            for file_id in file_ids:
+                action_requesters[file_id].append(group_number)
+        actions_by_group: dict[int, list[dict]] = defaultdict(list)
+        for file_id, requesters in action_requesters.items():
+            actions_by_group[min(requesters)].append(actions_by_file_id[file_id])
 
         applied: list[dict] = []
         failures: list[dict] = []
@@ -2448,12 +2599,7 @@ class WebReviewState:
                 quarantine = self.plan_path.parent / f"video-dedup-quarantine-{timestamp}"
                 quarantine.mkdir(parents=True, exist_ok=False)
 
-            path_to_file_id = {
-                str(item["path"]): file_id for file_id, item in self.files.items()
-            }
             for group_number, actions in ready_groups.items():
-                applied_before_group = len(applied)
-                failed = False
                 for action in actions:
                     path = Path(str(action["path"]))
                     try:
@@ -2472,16 +2618,27 @@ class WebReviewState:
                         if file_id is not None:
                             moved_file_ids.add(file_id)
                     except Exception as exc:
-                        failed = True
                         failures.append(
                             {"groupId": group_number, "path": str(path), "error": str(exc)}
                         )
-                if not failed and len(applied) - applied_before_group == len(actions):
-                    completed_groups.add(group_number)
+
+            completed_groups = {
+                group_number
+                for group_number, file_ids in requested_by_group.items()
+                if file_ids <= moved_file_ids
+            }
 
             hidden_file_ids = set(moved_file_ids)
+            active_file_ids = {
+                file_id
+                for group_number, group in enumerate(self.groups, 1)
+                if group_number not in completed_groups
+                for file_id in group
+            }
             for group_number in completed_groups:
-                hidden_file_ids.update(original_groups[group_number])
+                hidden_file_ids.update(
+                    set(original_groups[group_number]) - active_file_ids
+                )
             if hidden_file_ids:
                 self.source_files = {
                     file_id: item
@@ -2533,13 +2690,13 @@ class WebReviewState:
             }
             result_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
 
-        failed_groups = {int(item["groupId"]) for item in failures}
+        failed_groups = set(requested_by_group) - completed_groups
         return {
             "ok": not failures,
             "planPath": str(self.plan_path),
             "resultPath": str(result_path),
             "quarantinePath": str(quarantine) if quarantine else None,
-            "reviewedSetCount": len(actions_by_group),
+            "reviewedSetCount": len(requested_by_group),
             "appliedSetCount": len(completed_groups),
             "failedSetCount": len(failed_groups),
             "appliedFileCount": len(applied),

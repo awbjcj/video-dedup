@@ -104,6 +104,66 @@ class FingerprintTests(unittest.TestCase):
         self.assertEqual(eligible, [matches[0], matches[2]])
         self.assertEqual(filtered_count, 1)
 
+    def test_duplicate_groups_split_disjoint_clips_in_a_bridge_video(self) -> None:
+        matches = [
+            {
+                "a_id": 0, "b_id": 1, "kind": "perceptual",
+                "a_sample_ranges": [[0, 3]], "b_sample_ranges": [[0, 3]],
+            },
+            {
+                "a_id": 0, "b_id": 2, "kind": "perceptual",
+                "a_sample_ranges": [[10, 13]], "b_sample_ranges": [[0, 3]],
+            },
+        ]
+
+        groups = vd.connected_components(range(3), matches)
+
+        self.assertEqual(groups, [[0, 1], [0, 2]])
+        self.assertEqual(vd.group_matches_for(groups[0], matches), [matches[0]])
+        self.assertEqual(vd.group_matches_for(groups[1], matches), [matches[1]])
+
+    def test_duplicate_groups_join_matches_that_share_the_same_clip(self) -> None:
+        matches = [
+            {
+                "a_id": 0, "b_id": 1, "kind": "perceptual",
+                "a_sample_ranges": [[0, 5]], "b_sample_ranges": [[0, 5]],
+            },
+            {
+                "a_id": 0, "b_id": 2, "kind": "perceptual",
+                "a_sample_ranges": [[4, 8]], "b_sample_ranges": [[0, 4]],
+            },
+        ]
+
+        groups = vd.connected_components(range(3), matches)
+
+        self.assertEqual(groups, [[0, 1, 2]])
+        self.assertEqual(vd.group_matches_for(groups[0], matches), matches)
+
+    def test_exact_aliases_are_repeated_across_disjoint_clip_groups(self) -> None:
+        matches = [
+            {"a_id": 0, "b_id": 1, "kind": "exact"},
+            {
+                "a_id": 0, "b_id": 2, "kind": "perceptual",
+                "a_sample_ranges": [[0, 3]], "b_sample_ranges": [[0, 3]],
+            },
+            {
+                "a_id": 1, "b_id": 3, "kind": "perceptual",
+                "a_sample_ranges": [[10, 13]], "b_sample_ranges": [[0, 3]],
+            },
+        ]
+
+        groups = vd.connected_components(range(4), matches)
+
+        self.assertEqual(groups, [[0, 1, 2], [0, 1, 3]])
+        self.assertEqual(
+            vd.group_matches_for(groups[0], matches),
+            [matches[0], matches[1]],
+        )
+        self.assertEqual(
+            vd.group_matches_for(groups[1], matches),
+            [matches[0], matches[2]],
+        )
+
     def test_duplicate_time_ranges_merge_bins_for_timeline(self) -> None:
         matches = [
             {
@@ -258,6 +318,62 @@ class FingerprintTests(unittest.TestCase):
         )
 
         self.assertEqual(len(removals), 2)
+
+    def test_review_actions_combine_overlapping_sets_without_duplicate_removals(self) -> None:
+        files = {
+            0: {"path": "compilation.mp4", "duration_seconds": 8, "detailed_sample_count": 8, "size_bytes": 8, "mtime_ns": 1},
+            1: {"path": "clip-a.mp4", "duration_seconds": 4, "detailed_sample_count": 4, "size_bytes": 4, "mtime_ns": 1},
+            2: {"path": "clip-b.mp4", "duration_seconds": 4, "detailed_sample_count": 4, "size_bytes": 4, "mtime_ns": 1},
+        }
+        matches = [
+            {
+                "a_id": 0, "b_id": 1, "kind": "perceptual",
+                "a_sample_ranges": [[0, 3]], "b_sample_ranges": [[0, 3]],
+            },
+            {
+                "a_id": 0, "b_id": 2, "kind": "perceptual",
+                "a_sample_ranges": [[4, 7]], "b_sample_ranges": [[0, 3]],
+            },
+        ]
+        groups = vd.connected_components(files, matches)
+        decisions = {
+            1: vd.ReviewDecision({1}, [0], "manual"),
+            2: vd.ReviewDecision({2}, [0], "manual"),
+        }
+
+        actions = vd.build_review_actions(
+            groups, decisions, files, matches, 1.0, 95.0, verbose=False,
+        )
+
+        self.assertEqual([action["path"] for action in actions], ["compilation.mp4"])
+        self.assertEqual(actions[0]["covered_percent"], 100.0)
+        self.assertEqual(
+            actions[0]["kept_source_paths"], ["clip-a.mp4", "clip-b.mp4"],
+        )
+
+    def test_review_actions_never_remove_a_file_kept_in_an_overlapping_set(self) -> None:
+        files = {
+            index: {
+                "path": f"{index}.mp4", "duration_seconds": 4,
+                "detailed_sample_count": 4, "size_bytes": 4, "mtime_ns": 1,
+            }
+            for index in range(3)
+        }
+        matches = [
+            {"a_id": 0, "b_id": 1, "kind": "exact"},
+            {"a_id": 0, "b_id": 2, "kind": "exact"},
+        ]
+        groups = [[0, 1], [0, 2]]
+        decisions = {
+            1: vd.ReviewDecision({1}, [0], "manual"),
+            2: vd.ReviewDecision({0}, [2], "manual"),
+        }
+
+        actions = vd.build_review_actions(
+            groups, decisions, files, matches, 1.0, 95.0, verbose=False,
+        )
+
+        self.assertEqual([action["path"] for action in actions], ["2.mp4"])
 
     def test_review_strategy_writes_a_noninteractive_ordered_plan(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -541,6 +657,55 @@ class FingerprintTests(unittest.TestCase):
             apply_result = json.loads(Path(result["resultPath"]).read_text(encoding="utf-8"))
             self.assertEqual(apply_result["completed_sets"], [1])
             self.assertEqual(apply_result["failures"][0]["groupId"], 2)
+
+    def test_web_review_applies_one_combined_removal_from_overlapping_clip_sets(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            paths = [root / "compilation.mp4", root / "clip-a.mp4", root / "clip-b.mp4"]
+            for index, path in enumerate(paths):
+                path.write_bytes(f"video-{index}".encode())
+            files = {}
+            for index, path in enumerate(paths):
+                stat = path.stat()
+                files[index] = {
+                    "id": index, "path": str(path), "size_bytes": stat.st_size,
+                    "mtime_ns": stat.st_mtime_ns, "duration_seconds": 8 if index == 0 else 4,
+                    "width": 100, "height": 100, "codec": "h264",
+                    "detailed_sample_count": 8 if index == 0 else 4,
+                }
+            matches = [
+                {
+                    "a_id": 0, "b_id": 1, "kind": "perceptual",
+                    "a_sample_ranges": [[0, 3]], "b_sample_ranges": [[0, 3]],
+                },
+                {
+                    "a_id": 0, "b_id": 2, "kind": "perceptual",
+                    "a_sample_ranges": [[4, 7]], "b_sample_ranges": [[0, 3]],
+                },
+            ]
+            report_path = root / "report.json"
+            report_path.write_text(json.dumps({
+                "settings": {"roots": [str(root)], "sample_interval_seconds": 1.0},
+                "files": list(files.values()), "matches": matches,
+            }), encoding="utf-8")
+            state = vd.WebReviewState(
+                report_path, root / "plan.json", files, matches,
+                vd.connected_components(files, matches), 1.0, [str(root)], 95.0,
+            )
+            self.assertEqual(state.session_payload()["summary"]["fileCount"], 3)
+
+            result = state.apply_reviewed([
+                {"groupId": 1, "keeperIds": [1], "method": "web-manual"},
+                {"groupId": 2, "keeperIds": [2], "method": "web-manual"},
+            ])
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["appliedSetCount"], 2)
+            self.assertEqual(result["appliedFileCount"], 1)
+            self.assertFalse(paths[0].exists())
+            self.assertTrue(paths[1].exists())
+            self.assertTrue(paths[2].exists())
+            self.assertEqual(result["session"]["summary"]["groupCount"], 0)
 
     def test_load_review_decisions_ignores_legacy_unresolved_placeholders(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
