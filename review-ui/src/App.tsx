@@ -153,12 +153,38 @@ function App() {
     () => session ? filterReviewGroups(session.groups, review.decisions, filter, groupQuery) : [],
     [filter, groupQuery, review.decisions, session],
   )
-  const visibleActiveGroupId =
-    !navigableGroups.length || navigableGroups.some((group) => group.id === activeGroupId)
-      ? activeGroupId
-      : navigableGroups[0].id
-  const activeGroup = session?.groups.find((group) => group.id === visibleActiveGroupId)
-  const activeNavigationIndex = navigableGroups.findIndex((group) => group.id === visibleActiveGroupId)
+  const activeGroup = session?.groups.find((group) => group.id === activeGroupId)
+  const activeGroupIndex = session?.groups.findIndex((group) => group.id === activeGroupId) ?? -1
+  const navigableGroupIds = new Set(navigableGroups.map((group) => group.id))
+  const previousGroupId = activeGroupIndex > 0
+    ? session?.groups
+        .slice(0, activeGroupIndex)
+        .reverse()
+        .find((group) => navigableGroupIds.has(group.id))?.id
+    : undefined
+  const nextGroupId = activeGroupIndex >= 0
+    ? session?.groups
+        .slice(activeGroupIndex + 1)
+        .find((group) => navigableGroupIds.has(group.id))?.id
+    : undefined
+
+  function updateGroupQuery(value: string) {
+    setGroupQuery(value)
+    if (!session) return
+    const matchingGroups = filterReviewGroups(session.groups, review.decisions, filter, value)
+    if (matchingGroups.length && !matchingGroups.some((group) => group.id === activeGroupId)) {
+      setActiveGroupId(matchingGroups[0].id)
+    }
+  }
+
+  function updateFilter(value: FilterStatus) {
+    setFilter(value)
+    if (!session) return
+    const matchingGroups = filterReviewGroups(session.groups, review.decisions, value, groupQuery)
+    if (matchingGroups.length && !matchingGroups.some((group) => group.id === activeGroupId)) {
+      setActiveGroupId(matchingGroups[0].id)
+    }
+  }
 
   const selectedRemovalCount = useMemo(() => {
     if (!session) return 0
@@ -382,12 +408,12 @@ function App() {
         <ReviewSidebar
           groups={session.groups}
           decisions={review.decisions}
-          activeGroupId={visibleActiveGroupId}
+          activeGroupId={activeGroupId}
           selectedGroupIds={selectedGroupIds}
           query={groupQuery}
           filter={filter}
-          onQueryChange={setGroupQuery}
-          onFilterChange={setFilter}
+          onQueryChange={updateGroupQuery}
+          onFilterChange={updateFilter}
           onActivate={setActiveGroupId}
           onToggleSelected={(groupId) =>
             setSelectedGroupIds((current) =>
@@ -421,8 +447,8 @@ function App() {
             group={activeGroup}
             decision={review.decisions.get(activeGroup.id)}
             busy={recommending}
-            previousGroupId={activeNavigationIndex > 0 ? navigableGroups[activeNavigationIndex - 1].id : undefined}
-            nextGroupId={activeNavigationIndex >= 0 && activeNavigationIndex < navigableGroups.length - 1 ? navigableGroups[activeNavigationIndex + 1].id : undefined}
+            previousGroupId={previousGroupId}
+            nextGroupId={nextGroupId}
             onDecision={(decision) => dispatch({ type: 'set-many', decisions: [decision] })}
             onClearDecision={(groupId) => dispatch({ type: 'clear-many', groupIds: [groupId] })}
             onRecommend={(groupId, strategy) => void applyRecommendation([groupId], strategy)}

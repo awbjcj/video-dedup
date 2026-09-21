@@ -169,7 +169,10 @@ export function ReviewWorkspace({
               size="sm"
               variant="outline"
               className="border-amber-300 bg-white"
-              onClick={() => updateKeepers(new Set(group.files.map((file) => file.id)), 'web-keep-all')}
+              onClick={() => {
+                updateKeepers(new Set(group.files.map((file) => file.id)), 'web-keep-all')
+                if (nextGroupId) onNavigate(nextGroupId)
+              }}
             >
               <ShieldCheck className="mr-2 h-4 w-4" aria-hidden="true" /> Mark reviewed — keep all
             </Button>
@@ -259,7 +262,10 @@ export function ReviewWorkspace({
                 kept={keeperIds.has(file.id)}
                 canRemove={keeperIds.size > 1}
                 onToggle={() => toggleFile(file.id)}
-                onKeepOnly={() => updateKeepers(new Set([file.id]))}
+                onKeepOnly={() => {
+                  updateKeepers(new Set([file.id]))
+                  if (nextGroupId) onNavigate(nextGroupId)
+                }}
                 onCopied={() => toast.success('Path copied')}
                 onOpenInFolder={() => onOpenInFolder(file)}
                 onMoveToFolder={() => onMoveToFolder(file)}
