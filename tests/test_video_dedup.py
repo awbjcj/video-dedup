@@ -839,6 +839,27 @@ class FingerprintTests(unittest.TestCase):
             _, updated_report = vd.load_json(str(report_path))
             self.assertEqual(updated_report["files"][0]["path"], str(destination))
 
+    def test_folder_picker_preserves_non_ascii_destination_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            destination = Path(raw) / "整理视频"
+            destination.mkdir()
+            completed = subprocess.CompletedProcess(
+                [sys.executable, "-c", "picker"],
+                0,
+                stdout=json.dumps(str(destination)),
+                stderr="",
+            )
+
+            with mock.patch.object(
+                vd.subprocess, "run", return_value=completed
+            ) as run_picker:
+                selected = vd.choose_destination_folder(Path(raw))
+
+            self.assertEqual(selected, destination)
+            self.assertEqual(
+                run_picker.call_args.kwargs["env"]["PYTHONIOENCODING"], "utf-8"
+            )
+
     def test_web_review_move_cancel_and_existing_destination_are_safe(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

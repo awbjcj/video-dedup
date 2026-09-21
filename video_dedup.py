@@ -2182,6 +2182,7 @@ def reveal_file_in_folder(path: Path) -> None:
 def choose_destination_folder(initial_directory: Path) -> Path | None:
     """Show the OS folder browser in an isolated process and return its choice."""
     picker_script = """
+import json
 import os
 import tkinter as tk
 from tkinter import filedialog
@@ -2197,13 +2198,13 @@ try:
         initialdir=os.environ.get("VIDEO_DEDUP_INITIAL_FOLDER") or None,
         mustexist=True,
     )
-    if selected:
-        print(selected, end="")
+    print(json.dumps(selected), end="")
 finally:
     root.destroy()
 """
     environment = os.environ.copy()
     environment["VIDEO_DEDUP_INITIAL_FOLDER"] = str(initial_directory)
+    environment["PYTHONIOENCODING"] = "utf-8"
     try:
         completed = subprocess.run(
             [sys.executable, "-c", picker_script],
@@ -2223,7 +2224,12 @@ finally:
             "Could not open the folder browser"
             + (f": {detail[0]}" if detail else ".")
         )
-    selected = completed.stdout.strip()
+    try:
+        selected = json.loads(completed.stdout)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise DedupError("The folder browser returned an invalid destination.") from exc
+    if not isinstance(selected, str):
+        raise DedupError("The folder browser returned an invalid destination.")
     return Path(selected) if selected else None
 
 
