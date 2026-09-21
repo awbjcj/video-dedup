@@ -40,6 +40,8 @@ type ReviewWorkspaceProps = {
   onClearDecision: (groupId: number) => void
   onRecommend: (groupId: number, strategy: Strategy) => void
   onNavigate: (groupId: number) => void
+  onOpenInFolder: (file: VideoFile) => Promise<void>
+  onMoveToFolder: (file: VideoFile) => Promise<void>
 }
 
 function sortFiles(files: VideoFile[], sort: SortKey): VideoFile[] {
@@ -62,6 +64,8 @@ export function ReviewWorkspace({
   onClearDecision,
   onRecommend,
   onNavigate,
+  onOpenInFolder,
+  onMoveToFolder,
 }: ReviewWorkspaceProps) {
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<SortKey>('resolution')
@@ -257,6 +261,8 @@ export function ReviewWorkspace({
                 onToggle={() => toggleFile(file.id)}
                 onKeepOnly={() => updateKeepers(new Set([file.id]))}
                 onCopied={() => toast.success('Path copied')}
+                onOpenInFolder={() => onOpenInFolder(file)}
+                onMoveToFolder={() => onMoveToFolder(file)}
               />
             ))}
           </div>

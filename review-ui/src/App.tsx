@@ -15,12 +15,15 @@ import {
   fetchRecommendations,
   fetchRescanStatus,
   fetchSession,
+  moveToFolder,
+  openInFolder,
   savePlan,
   startRescan,
   updateSettings,
 } from '@/lib/api'
 import { formatBytes } from '@/lib/format'
-import type { Decision, DetectionSettings, FilterStatus, RescanStatus, SessionPayload, Strategy } from '@/types'
+import { filterReviewGroups } from '@/lib/reviewGroups'
+import type { Decision, DetectionSettings, FilterStatus, RescanStatus, SessionPayload, Strategy, VideoFile } from '@/types'
 
 type ReviewState = {
   decisions: Map<number, Decision>
@@ -145,8 +148,17 @@ function App() {
     return () => window.removeEventListener('keydown', saveShortcut)
   }, [])
 
-  const activeGroup = session?.groups.find((group) => group.id === activeGroupId)
-  const activeIndex = session?.groups.findIndex((group) => group.id === activeGroupId) ?? -1
+  const navigableGroups = useMemo(
+    () => session ? filterReviewGroups(session.groups, review.decisions, filter, groupQuery) : [],
+    [filter, groupQuery, review.decisions, session],
+  )
+  const visibleActiveGroupId =
+    !navigableGroups.length || navigableGroups.some((group) => group.id === activeGroupId)
+      ? activeGroupId
+      : navigableGroups[0].id
+  const activeGroup = session?.groups.find((group) => group.id === visibleActiveGroupId)
+  const activeNavigationIndex = navigableGroups.findIndex((group) => group.id === visibleActiveGroupId)
+
   const selectedRemovalCount = useMemo(() => {
     if (!session) return 0
     return [...review.decisions.values()].reduce((total, decision) => {
@@ -250,6 +262,34 @@ function App() {
     }
   }
 
+  async function revealVideo(file: VideoFile) {
+    try {
+      await openInFolder(file.id)
+      toast.success('Opened in file manager', { description: file.name })
+    } catch (error) {
+      toast.error('Could not open the file location', {
+        description: error instanceof Error ? error.message : 'Unknown error',
+      })
+    }
+  }
+
+  async function moveVideo(file: VideoFile) {
+    try {
+      const result = await moveToFolder(file.id)
+      if (result.cancelled) return
+      if (!result.moved) {
+        toast.info('File is already in that folder', { description: file.name })
+        return
+      }
+      if (result.session) setSession(result.session)
+      toast.success('Video moved', { description: result.destinationPath })
+    } catch (error) {
+      toast.error('Could not move the video', {
+        description: error instanceof Error ? error.message : 'Unknown error',
+      })
+    }
+  }
+
   async function applyReviewSettings(settings: Omit<DetectionSettings, 'rescanAvailable' | 'reportMinimumDuplicatePercent'>) {
     setApplyingSettings(true)
     try {
@@ -341,7 +381,7 @@ function App() {
         <ReviewSidebar
           groups={session.groups}
           decisions={review.decisions}
-          activeGroupId={activeGroupId}
+          activeGroupId={visibleActiveGroupId}
           selectedGroupIds={selectedGroupIds}
           query={groupQuery}
           filter={filter}
@@ -383,12 +423,14 @@ function App() {
             group={activeGroup}
             decision={review.decisions.get(activeGroup.id)}
             busy={recommending}
-            previousGroupId={activeIndex > 0 ? session.groups[activeIndex - 1].id : undefined}
-            nextGroupId={activeIndex < session.groups.length - 1 ? session.groups[activeIndex + 1].id : undefined}
+            previousGroupId={activeNavigationIndex > 0 ? navigableGroups[activeNavigationIndex - 1].id : undefined}
+            nextGroupId={activeNavigationIndex >= 0 && activeNavigationIndex < navigableGroups.length - 1 ? navigableGroups[activeNavigationIndex + 1].id : undefined}
             onDecision={(decision) => dispatch({ type: 'set-many', decisions: [decision] })}
             onClearDecision={(groupId) => dispatch({ type: 'clear-many', groupIds: [groupId] })}
             onRecommend={(groupId, strategy) => void applyRecommendation([groupId], strategy)}
             onNavigate={setActiveGroupId}
+            onOpenInFolder={revealVideo}
+            onMoveToFolder={moveVideo}
           />
         </div>
       </div> : (

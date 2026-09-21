@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { Check, Copy, FileWarning, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react'
+import { Check, Copy, FileInput, FileWarning, FolderSearch, LoaderCircle, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -16,6 +16,8 @@ type FileCardProps = {
   onToggle: () => void
   onKeepOnly: () => void
   onCopied: () => void
+  onOpenInFolder: () => Promise<void>
+  onMoveToFolder: () => Promise<void>
 }
 
 export function FileCard({
@@ -25,13 +27,25 @@ export function FileCard({
   onToggle,
   onKeepOnly,
   onCopied,
+  onOpenInFolder,
+  onMoveToFolder,
 }: FileCardProps) {
   const [videoFailed, setVideoFailed] = useState(false)
+  const [fileAction, setFileAction] = useState<'open' | 'move' | null>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
 
   async function copyPath() {
     await navigator.clipboard.writeText(file.path)
     onCopied()
+  }
+
+  async function runFileAction(action: 'open' | 'move') {
+    setFileAction(action)
+    try {
+      await (action === 'open' ? onOpenInFolder() : onMoveToFolder())
+    } finally {
+      setFileAction(null)
+    }
   }
 
   return (
@@ -134,6 +148,37 @@ export function FileCard({
           <Badge variant="outline" className="font-mono font-normal text-slate-500">
             {file.codec}
           </Badge>
+        </div>
+
+        <div className="mt-3 grid grid-cols-2 gap-2" aria-label={`File actions for ${file.name}`}>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={fileAction !== null}
+            onClick={() => void runFileAction('open')}
+          >
+            {fileAction === 'open' ? (
+              <LoaderCircle className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+            ) : (
+              <FolderSearch className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
+            )}
+            Open in folder
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={fileAction !== null}
+            onClick={() => void runFileAction('move')}
+          >
+            {fileAction === 'move' ? (
+              <LoaderCircle className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+            ) : (
+              <FileInput className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
+            )}
+            {fileAction === 'move' ? 'Choose folder…' : 'Move…'}
+          </Button>
         </div>
 
         <div className="mt-4 border-t border-slate-200 pt-3 text-sm">

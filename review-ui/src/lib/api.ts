@@ -1,4 +1,14 @@
-import type { ApplyReviewedResult, Decision, DetectionSettings, RescanStatus, SaveResult, SessionPayload, Strategy } from '@/types'
+import type {
+  ApplyReviewedResult,
+  Decision,
+  DetectionSettings,
+  MoveToFolderResult,
+  OpenInFolderResult,
+  RescanStatus,
+  SaveResult,
+  SessionPayload,
+  Strategy,
+} from '@/types'
 
 async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -45,6 +55,20 @@ export function applyReviewed(decisions: Decision[]): Promise<ApplyReviewedResul
   return requestJson<ApplyReviewedResult>('/api/apply-reviewed', {
     method: 'POST',
     body: JSON.stringify({ decisions }),
+  })
+}
+
+export function openInFolder(fileId: number): Promise<OpenInFolderResult> {
+  return requestJson<OpenInFolderResult>('/api/open-in-folder', {
+    method: 'POST',
+    body: JSON.stringify({ fileId }),
+  })
+}
+
+export function moveToFolder(fileId: number): Promise<MoveToFolderResult> {
+  return requestJson<MoveToFolderResult>('/api/move-to-folder', {
+    method: 'POST',
+    body: JSON.stringify({ fileId }),
   })
 }
 

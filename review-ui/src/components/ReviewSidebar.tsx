@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
+import { filterReviewGroups } from '@/lib/reviewGroups'
 import { cn } from '@/lib/utils'
 import type { Decision, DuplicateGroup, FilterStatus } from '@/types'
 
@@ -34,23 +35,10 @@ export function ReviewSidebar({
   onToggleSelected,
   onSelectVisible,
 }: ReviewSidebarProps) {
-  const visibleGroups = useMemo(() => {
-    const needle = query.trim().toLowerCase()
-    return groups.filter((group) => {
-      const isDecided = decisions.has(group.id)
-      if (filter === 'decided' && !isDecided) return false
-      if (filter === 'unresolved' && isDecided) return false
-      if (!needle) return true
-      return (
-        String(group.id).includes(needle) ||
-        group.files.some(
-          (file) =>
-            file.name.toLowerCase().includes(needle) ||
-            file.path.toLowerCase().includes(needle),
-        )
-      )
-    })
-  }, [decisions, filter, groups, query])
+  const visibleGroups = useMemo(
+    () => filterReviewGroups(groups, decisions, filter, query),
+    [decisions, filter, groups, query],
+  )
 
   const allVisibleSelected =
     visibleGroups.length > 0 && visibleGroups.every((group) => selectedGroupIds.has(group.id))

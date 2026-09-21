@@ -35,6 +35,24 @@ failures without modifying the media library. It uses three matching stages:
 3. Only likely candidates are decoded at a fixed interval for perceptual
    confirmation and matched timeline ranges.
 
+Both extraction passes downscale grayscale frames to 27 by 24 pixels. Each
+sample stores a whole-frame dHash/aHash and nine independent 9-by-8 regional
+hashes. Region-position tokens participate in candidate retrieval as well as
+confirmation, so a watermark affecting the global hash does not eliminate the
+pair before regional comparison. Whole-frame tokens retain reserved space in
+the bounded per-video token budget.
+
+Frame distance is the smaller of the whole-frame distance and a regional
+distance. The regional path requires at least seven informative corresponding
+tiles, trims the two worst regions, and uses the larger of the retained mean
+distance and the fifth-best distance, plus a four-point penalty. This requires
+a majority of the picture to agree while tolerating watermark boundaries across
+tiles. The excluded regions are selected per frame, allowing floating logos.
+Flat tiles cannot supply evidence. The existing hash-distance setting controls
+both paths, and zero remains strict. Confirmation favors the established time
+offset over a slightly better-looking neighboring frame to prevent overlays
+from creating artificial gaps in timeline coverage.
+
 The report records the scan settings, files, matches, failures, and a summary.
 The tool writes JSON to the requested report path and emits a stable JSON result
 on stdout; progress belongs on stderr.
@@ -46,6 +64,12 @@ path, byte size, nanosecond modification time, fingerprint kind, and sampling
 interval. It also remembers decode failures. A file changed on disk gets new
 work automatically; retry-failures retries unchanged failures after an
 environment problem is fixed.
+
+Version 1.6 uses new fast/detailed cache kinds for regional fingerprints. Earlier
+visual rows are not reused, and the first rescan extracts the additional data.
+Exact SHA-256 cache entries remain compatible. Regional samples cost more memory
+and storage than the old whole-frame samples; candidate token and pair caps still
+apply.
 
 The cache improves repeated scans, but it is not a source of truth and is
 ignored by Git. Deleting it is safe; the next scan simply rebuilds it.
@@ -109,7 +133,9 @@ web-review instance, including responsive and accessibility checks.
 
 ## Compatibility and limits
 
-Perceptual matching examines video frames, not audio. Cropping, overlays, speed
+Perceptual matching examines video frames, not audio. Static and floating
+watermarks are tolerated through regional comparisons, but large/full-screen
+overlays and low-detail footage can still defeat matching. Cropping, speed
 changes, mirroring, unusual codecs, or many nearly identical static scenes can
 affect results. Tune scan settings when appropriate and manually review every
 proposed removal. A report is an aid to review, not proof that a file is safe to

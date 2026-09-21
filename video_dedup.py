@@ -38,11 +38,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Iterator, Sequence
 
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 DEFAULT_MINIMUM_VIDEO_DURATION = 10.0
 FRAME_WIDTH = 9
 FRAME_HEIGHT = 8
 FRAME_BYTES = FRAME_WIDTH * FRAME_HEIGHT
+REGION_GRID = 3
+REGION_COUNT = REGION_GRID * REGION_GRID
+REGION_REQUIRED = REGION_COUNT - 2
+EXTRACT_WIDTH = FRAME_WIDTH * REGION_GRID
+EXTRACT_HEIGHT = FRAME_HEIGHT * REGION_GRID
+EXTRACT_BYTES = EXTRACT_WIDTH * EXTRACT_HEIGHT
 DEFAULT_EXTENSIONS = {
     ".3gp",
     ".asf",
@@ -72,10 +78,9 @@ DEFAULT_EXTENSIONS = {
     ".wmv",
 }
 SAMPLE_STRUCT = struct.Struct("<QQBf")  # dHash, aHash, mean luma, time
-# The optimized extractor produces the same fingerprint representation as 1.0,
-# so existing expensive caches remain valid across the upgrade.
-FAST_CACHE_KIND = "fast"
-DETAILED_CACHE_KIND = "detailed"
+# Regional hashes need a fresh extraction; exact file hashes remain reusable.
+FAST_CACHE_KIND = "fast-regions-v2"
+DETAILED_CACHE_KIND = "detailed-regions-v2"
 CACHE_COMMIT_BATCH = 100
 PTS_TIME_PATTERN = re.compile(rb"pts_time:([+-]?(?:\d+(?:\.\d*)?|\.\d+))")
 REVIEW_STRATEGIES = (
@@ -115,6 +120,7 @@ class Sample:
     ahash: int
     mean: int
     timestamp: float
+    regions: tuple[Sample, ...] = ()
 
 
 @dataclass
@@ -344,6 +350,32 @@ def frame_sample(frame: bytes, timestamp: float) -> Sample:
     return Sample(dhash=dhash, ahash=ahash, mean=mean, timestamp=timestamp)
 
 
+def regional_frame_sample(frame: bytes, timestamp: float) -> Sample:
+    """Keep a whole-frame hash plus independently normalized spatial tiles."""
+    if len(frame) != EXTRACT_BYTES:
+        raise ValueError("Unexpected regional raw frame size")
+    whole = bytes(
+        sum(
+            frame[(row * REGION_GRID + dy) * EXTRACT_WIDTH + col * REGION_GRID + dx]
+            for dy in range(REGION_GRID)
+            for dx in range(REGION_GRID)
+        ) // REGION_COUNT
+        for row in range(FRAME_HEIGHT)
+        for col in range(FRAME_WIDTH)
+    )
+    base = frame_sample(whole, timestamp)
+    regions = tuple(
+        frame_sample(bytes(
+            frame[(tile_y * FRAME_HEIGHT + row) * EXTRACT_WIDTH + tile_x * FRAME_WIDTH + col]
+            for row in range(FRAME_HEIGHT)
+            for col in range(FRAME_WIDTH)
+        ), timestamp)
+        for tile_y in range(REGION_GRID)
+        for tile_x in range(REGION_GRID)
+    )
+    return Sample(base.dhash, base.ahash, base.mean, timestamp, regions)
+
+
 def _raw_frames(
     command: Sequence[str], timestamps: Sequence[float] | None, interval: float
 ) -> list[Sample]:
@@ -354,12 +386,12 @@ def _raw_frames(
 def _samples_from_raw(
     raw: bytes, source: Path | str, timestamps: Sequence[float] | None, interval: float
 ) -> list[Sample]:
-    count = len(raw) // FRAME_BYTES
+    count = len(raw) // EXTRACT_BYTES
     if count == 0:
         raise DedupError(f"FFmpeg produced no frames: {source}")
-    if len(raw) % FRAME_BYTES:
+    if len(raw) % EXTRACT_BYTES:
         log(
-            f"warning: ignoring {len(raw) % FRAME_BYTES} trailing raw bytes for {source}"
+            f"warning: ignoring {len(raw) % EXTRACT_BYTES} trailing raw bytes for {source}"
         )
     if timestamps is not None and len(timestamps) != count:
         usable = min(len(timestamps), count)
@@ -370,8 +402,8 @@ def _samples_from_raw(
     result = []
     for index in range(count):
         stamp = timestamps[index] if timestamps is not None else index * interval
-        frame = raw[index * FRAME_BYTES : (index + 1) * FRAME_BYTES]
-        result.append(frame_sample(frame, float(stamp)))
+        frame = raw[index * EXTRACT_BYTES : (index + 1) * EXTRACT_BYTES]
+        result.append(regional_frame_sample(frame, float(stamp)))
     return result
 
 
@@ -395,7 +427,7 @@ def extract_fast(path: Path, max_frames: int) -> tuple[dict, list[Sample]]:
         "-vf",
         (
             f"select=isnan(prev_selected_t)+gte(t-prev_selected_t\\,{spacing:.9g}),"
-            f"scale={FRAME_WIDTH}:{FRAME_HEIGHT}:flags=area,format=gray,showinfo"
+            f"scale={EXTRACT_WIDTH}:{EXTRACT_HEIGHT}:flags=area,format=gray,showinfo"
         ),
         "-fps_mode",
         "passthrough",
@@ -412,7 +444,7 @@ def extract_fast(path: Path, max_frames: int) -> tuple[dict, list[Sample]]:
         float(match.group(1)) for match in PTS_TIME_PATTERN.finditer(process.stderr)
     ]
     fallback_interval = metadata["duration"] / max(
-        1, len(process.stdout) // FRAME_BYTES - 1
+        1, len(process.stdout) // EXTRACT_BYTES - 1
     )
     samples = _samples_from_raw(
         process.stdout, path, timestamps or None, fallback_interval
@@ -432,7 +464,7 @@ def extract_detailed(path: Path, interval: float) -> list[Sample]:
         "-an",
         "-sn",
         "-vf",
-        f"fps=1/{interval:g},scale={FRAME_WIDTH}:{FRAME_HEIGHT}:flags=area,format=gray",
+        f"fps=1/{interval:g},scale={EXTRACT_WIDTH}:{EXTRACT_HEIGHT}:flags=area,format=gray",
         "-fps_mode",
         "passthrough",
         "-f",
@@ -448,20 +480,53 @@ def extract_detailed(path: Path, interval: float) -> list[Sample]:
 def encode_samples(samples: Sequence[Sample]) -> bytes:
     raw = bytearray()
     for sample in samples:
+        if len(sample.regions) not in (0, REGION_COUNT):
+            raise ValueError("Unexpected fingerprint region count")
+        raw.append(len(sample.regions))
         raw += SAMPLE_STRUCT.pack(
             sample.dhash, sample.ahash, sample.mean, sample.timestamp
         )
+        for region in sample.regions:
+            raw += SAMPLE_STRUCT.pack(
+                region.dhash, region.ahash, region.mean, sample.timestamp
+            )
     return zlib.compress(bytes(raw), level=6)
 
 
 def decode_samples(blob: bytes) -> list[Sample]:
     raw = zlib.decompress(blob)
-    if len(raw) % SAMPLE_STRUCT.size:
-        raise DedupError("Fingerprint cache is corrupt")
-    return [
-        Sample(*SAMPLE_STRUCT.unpack_from(raw, offset))
-        for offset in range(0, len(raw), SAMPLE_STRUCT.size)
-    ]
+    result = []
+    offset = 0
+    while offset < len(raw):
+        region_count = raw[offset]
+        offset += 1
+        end = offset + (region_count + 1) * SAMPLE_STRUCT.size
+        if region_count not in (0, REGION_COUNT) or end > len(raw):
+            raise DedupError("Fingerprint cache is corrupt")
+        dhash, ahash, mean, timestamp = SAMPLE_STRUCT.unpack_from(raw, offset)
+        regions = tuple(
+            Sample(
+                dhash=region_dhash,
+                ahash=region_ahash,
+                mean=region_mean,
+                timestamp=region_timestamp,
+            )
+            for region_dhash, region_ahash, region_mean, region_timestamp in (
+                SAMPLE_STRUCT.unpack_from(raw, offset + index * SAMPLE_STRUCT.size)
+                for index in range(1, region_count + 1)
+            )
+        )
+        result.append(
+            Sample(
+                dhash=dhash,
+                ahash=ahash,
+                mean=mean,
+                timestamp=timestamp,
+                regions=regions,
+            )
+        )
+        offset = end
+    return result
 
 
 class FingerprintCache:
@@ -526,7 +591,7 @@ class FingerprintCache:
             return None
         try:
             return json.loads(row[0]), decode_samples(row[1])
-        except (json.JSONDecodeError, TypeError, ValueError, zlib.error, struct.error):
+        except (DedupError, json.JSONDecodeError, TypeError, ValueError, zlib.error, struct.error):
             # A partial/corrupt row should cost one recomputation, not abort the
             # entire library scan.
             self.connection.execute(
@@ -624,10 +689,19 @@ def sample_tokens(sample: Sample) -> Iterator[int]:
         yield (band << 16) | ((sample.dhash >> (band * 16)) & 0xFFFF)
     for band in range(4):
         yield ((band + 4) << 16) | ((sample.ahash >> (band * 16)) & 0xFFFF)
+    # Position is part of the key: a shared logo in one tile only retrieves
+    # candidates; it cannot stand in for matching the rest of the picture.
+    for position, region in enumerate(sample.regions):
+        if informative_sample(region):
+            for token in sample_tokens(region):
+                yield ((position + 1) * 8 << 16) + token
 
 
 def informative_sample(sample: Sample) -> bool:
-    return not (sample.dhash == 0 and sample.ahash in (0, 0xFFFFFFFFFFFFFFFF))
+    return (
+        not (sample.dhash == 0 and sample.ahash in (0, 0xFFFFFFFFFFFFFFFF))
+        or any(informative_sample(region) for region in sample.regions)
+    )
 
 
 def selected_tokens(samples: Sequence[Sample], limit: int) -> list[int]:
@@ -639,7 +713,11 @@ def selected_tokens(samples: Sequence[Sample], limit: int) -> list[int]:
         tokens.update(sample_tokens(sample))
     if len(tokens) <= limit:
         return list(tokens)
-    return heapq.nsmallest(limit, tokens, key=splitmix64)
+    # Reserve space for whole-frame keys so regional keys cannot crowd out
+    # existing re-encode/compilation retrieval within the same memory budget.
+    whole = {token for token in tokens if token < (8 << 16)}
+    retained = heapq.nsmallest((limit + 1) // 2, whole, key=splitmix64)
+    return retained + heapq.nsmallest(limit - len(retained), tokens - set(retained), key=splitmix64)
 
 
 def build_candidates(
@@ -680,13 +758,36 @@ def build_candidates(
     return candidates
 
 
-def sample_distance(left: Sample, right: Sample) -> int:
+def whole_sample_distance(left: Sample, right: Sample) -> int:
     # Mean luma is a small penalty, while the two perceptual hashes dominate.
     return (
         (left.dhash ^ right.dhash).bit_count()
         + (left.ahash ^ right.ahash).bit_count()
         + min(8, abs(left.mean - right.mean) // 16)
     )
+
+
+def sample_distance(left: Sample, right: Sample) -> int:
+    whole = whole_sample_distance(left, right)
+    if len(left.regions) != REGION_COUNT or len(right.regions) != REGION_COUNT:
+        return whole
+    distances = sorted(
+        whole_sample_distance(a, b)
+        for a, b in zip(left.regions, right.regions)
+        if informative_sample(a) and informative_sample(b)
+    )
+    if len(distances) < REGION_REQUIRED:
+        return whole
+    # Compare the best seven of nine textured tiles. Discarded tiles can
+    # change on every frame, allowing floating as well as static watermarks.
+    # Average the retained distances to soften logo edges crossing tile borders,
+    # but still require a majority of all nine tiles to agree individually.
+    # A small penalty keeps threshold=0 strict and favors whole-frame matches.
+    regional = max(
+        math.ceil(sum(distances[:REGION_REQUIRED]) / REGION_REQUIRED),
+        distances[REGION_COUNT // 2],
+    )
+    return min(whole, regional + 4)
 
 
 def matching_points(
@@ -812,9 +913,12 @@ def detailed_match(
                     and i not in used_a
                     and j not in used_b
                 ):
-                    options.append((candidate_distance, j))
+                    options.append((abs(offset - base_offset), candidate_distance, j))
             if options:
-                distance, j = min(options)
+                # Prefer the established temporal alignment over a lower-distance
+                # neighboring frame. Overlays can otherwise make the greedy
+                # matcher skip/reuse frames even when every aligned frame matches.
+                _, distance, j = min(options)
                 available.append((i, j, distance))
         by_i = {i: (j, distance) for i, j, distance in available}
         for run in _runs(sorted(by_i)):
@@ -2052,6 +2156,77 @@ def browser_can_play_source(path: Path, codec: object) -> bool:
     return native_codecs is not None and str(codec).lower() in native_codecs
 
 
+def reveal_file_in_folder(path: Path) -> None:
+    """Open the platform file manager with ``path`` selected when supported."""
+    if not path.is_file():
+        raise ValueError("Video file is no longer available.")
+    if sys.platform == "win32":
+        command = ["explorer.exe", f"/select,{path}"]
+    elif sys.platform == "darwin":
+        command = ["open", "-R", str(path)]
+    else:
+        # There is no portable Linux file-selection protocol, so open the
+        # containing folder as the closest supported behavior.
+        command = ["xdg-open", str(path.parent)]
+    try:
+        subprocess.Popen(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
+        )
+    except OSError as exc:
+        raise DedupError(f"Could not open the file manager: {exc}") from exc
+
+
+def choose_destination_folder(initial_directory: Path) -> Path | None:
+    """Show the OS folder browser in an isolated process and return its choice."""
+    picker_script = """
+import os
+import tkinter as tk
+from tkinter import filedialog
+
+root = tk.Tk()
+root.withdraw()
+root.attributes("-topmost", True)
+root.update()
+try:
+    selected = filedialog.askdirectory(
+        parent=root,
+        title="Choose where to move the video",
+        initialdir=os.environ.get("VIDEO_DEDUP_INITIAL_FOLDER") or None,
+        mustexist=True,
+    )
+    if selected:
+        print(selected, end="")
+finally:
+    root.destroy()
+"""
+    environment = os.environ.copy()
+    environment["VIDEO_DEDUP_INITIAL_FOLDER"] = str(initial_directory)
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", picker_script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=environment,
+            creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
+        )
+    except OSError as exc:
+        raise DedupError(f"Could not open the folder browser: {exc}") from exc
+    if completed.returncode:
+        detail = completed.stderr.strip().splitlines()[-1:] or []
+        raise DedupError(
+            "Could not open the folder browser"
+            + (f": {detail[0]}" if detail else ".")
+        )
+    selected = completed.stdout.strip()
+    return Path(selected) if selected else None
+
+
 @dataclass
 class WebReviewState:
     report_path: Path
@@ -2324,6 +2499,128 @@ class WebReviewState:
     def get_rescan_status(self) -> dict:
         with self.rescan_lock:
             return dict(self.rescan_status)
+
+    def _active_file(self, raw_file_id: object) -> tuple[int, dict, Path]:
+        try:
+            file_id = int(raw_file_id)  # type: ignore[arg-type]
+            item = self.files[file_id]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("Unknown video.") from exc
+        path = Path(str(item["path"]))
+        if not path.is_file():
+            raise ValueError("Video file is no longer available.")
+        return file_id, item, path
+
+    def open_in_folder(self, raw_file_id: object) -> dict:
+        _, _, path = self._active_file(raw_file_id)
+        reveal_file_in_folder(path)
+        return {"ok": True, "path": str(path)}
+
+    def _rewrite_report_file_path(self, file_id: int, destination: Path) -> None:
+        _, report = load_json(str(self.report_path))
+        report_files = report.get("files")
+        if not isinstance(report_files, list):
+            raise DedupError("The source report does not contain a files list.")
+        report_item = next(
+            (
+                item
+                for item in report_files
+                if isinstance(item, dict) and int(item.get("id", -1)) == file_id
+            ),
+            None,
+        )
+        if report_item is None:
+            raise DedupError("The video is no longer present in the source report.")
+        report_item["path"] = str(destination)
+
+        temporary_file = tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=self.report_path.parent,
+            prefix=f".{self.report_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        )
+        temporary_path = Path(temporary_file.name)
+        try:
+            with temporary_file:
+                json.dump(report, temporary_file, indent=2)
+            os.replace(temporary_path, self.report_path)
+        finally:
+            temporary_path.unlink(missing_ok=True)
+
+    def move_to_folder(self, raw_file_id: object) -> dict:
+        if self.get_rescan_status().get("state") == "running":
+            raise ValueError("Wait for the active rescan to finish before moving a video.")
+        file_id, _, source = self._active_file(raw_file_id)
+        destination_folder = choose_destination_folder(source.parent)
+        if destination_folder is None:
+            return {"ok": True, "cancelled": True, "moved": False}
+        if not destination_folder.is_dir():
+            raise ValueError("The selected destination folder is no longer available.")
+
+        destination = destination_folder / source.name
+        source_key = os.path.normcase(os.path.abspath(source))
+        destination_key = os.path.normcase(os.path.abspath(destination))
+        if source_key == destination_key:
+            return {
+                "ok": True,
+                "cancelled": False,
+                "moved": False,
+                "sourcePath": str(source),
+                "destinationPath": str(destination),
+                "session": self.session_payload(),
+            }
+        if destination.exists():
+            raise ValueError(
+                f'A file named "{source.name}" already exists in the selected folder.'
+            )
+
+        with self.save_lock:
+            _, current_item, current_source = self._active_file(file_id)
+            if os.path.normcase(os.path.abspath(current_source)) != source_key:
+                raise ValueError("The video location changed while the folder browser was open.")
+            shutil.move(str(current_source), str(destination))
+            original_item = dict(current_item)
+            try:
+                updated_item = dict(current_item)
+                updated_item["path"] = str(destination)
+                self.source_files[file_id] = updated_item
+                self._rebuild_review_data()
+                self._rewrite_report_file_path(file_id, destination)
+                if self.decisions and self.plan_path.exists():
+                    refreshed_plan, _, _ = self._web_plan_payload(self.decisions)
+                    self._write_plan(refreshed_plan)
+            except Exception:
+                self.source_files[file_id] = original_item
+                self._rebuild_review_data()
+                report_rollback_error: OSError | RuntimeError | ValueError | None = None
+                try:
+                    self._rewrite_report_file_path(file_id, current_source)
+                except (OSError, RuntimeError, ValueError) as exc:
+                    report_rollback_error = exc
+                try:
+                    if destination.exists() and not current_source.exists():
+                        shutil.move(str(destination), str(current_source))
+                except OSError as rollback_error:
+                    raise DedupError(
+                        f"The move could not be recorded and rollback failed: {rollback_error}"
+                    ) from rollback_error
+                if report_rollback_error is not None:
+                    raise DedupError(
+                        "The move could not be recorded and the report could not be restored: "
+                        f"{report_rollback_error}"
+                    ) from report_rollback_error
+                raise
+
+        return {
+            "ok": True,
+            "cancelled": False,
+            "moved": True,
+            "sourcePath": str(source),
+            "destinationPath": str(destination),
+            "session": self.session_payload(),
+        }
 
     def session_payload(self) -> dict:
         initial_decisions = []
@@ -2968,6 +3265,10 @@ def make_web_review_handler(
                     self._send_json(state.save_plan(payload.get("decisions")))
                 elif path_value == "/api/apply-reviewed":
                     self._send_json(state.apply_reviewed(payload.get("decisions")))
+                elif path_value == "/api/open-in-folder":
+                    self._send_json(state.open_in_folder(payload.get("fileId")))
+                elif path_value == "/api/move-to-folder":
+                    self._send_json(state.move_to_folder(payload.get("fileId")))
                 elif path_value == "/api/settings":
                     self._send_json(state.update_settings(payload))
                 elif path_value == "/api/rescan":
@@ -2976,6 +3277,8 @@ def make_web_review_handler(
                     self._send_error_json(404, "Not found.")
             except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
                 self._send_error_json(400, str(exc))
+            except DedupError as exc:
+                self._send_error_json(500, str(exc))
             except OSError as exc:
                 self._send_error_json(500, f"Could not complete the request: {exc}")
 

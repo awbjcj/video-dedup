@@ -7,7 +7,9 @@ MKV, and legacy MPEG-4 to fragmented MP4 through `/api/preview/:id`. It also
 requests coverage-safe recommendations and saves plans through `/api/plan`.
 Reviewed portions of a plan can also be applied through `/api/apply-reviewed`;
 the server moves selected files into quarantine and returns a refreshed review
-session with completed sets removed.
+session with completed sets removed. Each video card can also reveal its source
+in the system file manager or open a native folder browser and move the source
+while keeping the active session and report path in sync.
 
 ```powershell
 pnpm install

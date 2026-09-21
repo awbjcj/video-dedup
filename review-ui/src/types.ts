@@ -96,6 +96,20 @@ export type ApplyReviewedResult = {
   session: SessionPayload
 }
 
+export type OpenInFolderResult = {
+  ok: true
+  path: string
+}
+
+export type MoveToFolderResult = {
+  ok: true
+  cancelled: boolean
+  moved: boolean
+  sourcePath?: string
+  destinationPath?: string
+  session?: SessionPayload
+}
+
 export type Strategy =
   | 'delete-shallower'
   | 'delete-shorter-name'

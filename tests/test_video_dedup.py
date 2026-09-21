@@ -795,6 +795,83 @@ class FingerprintTests(unittest.TestCase):
             payload = json.loads(plan_path.read_text(encoding="utf-8"))
             self.assertIn(payload["decisions"][0]["keeper_paths"], [[str(paths[0])], [str(paths[1])]])
 
+    def test_web_review_file_actions_reveal_and_move_video(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            report_path, paths = self.write_three_group_report(root)
+            paths[0].write_bytes(b"video-bytes")
+            destination_folder = root / "organized"
+            destination_folder.mkdir()
+            _, report = vd.load_json(str(report_path))
+            files = {int(item["id"]): item for item in report["files"]}
+            state = vd.WebReviewState(
+                report_path,
+                root / "plan.json",
+                files,
+                report["matches"],
+                vd.connected_components(files, report["matches"]),
+                1.0,
+                [str(root)],
+                95.0,
+            )
+
+            with mock.patch.object(vd, "reveal_file_in_folder") as reveal:
+                result = state.open_in_folder(0)
+            self.assertTrue(result["ok"])
+            reveal.assert_called_once_with(paths[0])
+
+            with mock.patch.object(
+                vd, "choose_destination_folder", return_value=destination_folder
+            ):
+                result = state.move_to_folder(0)
+
+            destination = destination_folder / paths[0].name
+            self.assertTrue(result["moved"])
+            self.assertFalse(paths[0].exists())
+            self.assertEqual(destination.read_bytes(), b"video-bytes")
+            moved_file = next(
+                item
+                for group in result["session"]["groups"]
+                for item in group["files"]
+                if item["id"] == 0
+            )
+            self.assertEqual(moved_file["path"], str(destination))
+            _, updated_report = vd.load_json(str(report_path))
+            self.assertEqual(updated_report["files"][0]["path"], str(destination))
+
+    def test_web_review_move_cancel_and_existing_destination_are_safe(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            report_path, paths = self.write_three_group_report(root)
+            paths[0].write_bytes(b"source")
+            destination_folder = root / "organized"
+            destination_folder.mkdir()
+            _, report = vd.load_json(str(report_path))
+            files = {int(item["id"]): item for item in report["files"]}
+            state = vd.WebReviewState(
+                report_path,
+                root / "plan.json",
+                files,
+                report["matches"],
+                vd.connected_components(files, report["matches"]),
+                1.0,
+                [str(root)],
+                95.0,
+            )
+
+            with mock.patch.object(vd, "choose_destination_folder", return_value=None):
+                cancelled = state.move_to_folder(0)
+            self.assertTrue(cancelled["cancelled"])
+            self.assertTrue(paths[0].exists())
+
+            (destination_folder / paths[0].name).write_bytes(b"existing")
+            with mock.patch.object(
+                vd, "choose_destination_folder", return_value=destination_folder
+            ):
+                with self.assertRaisesRegex(ValueError, "already exists"):
+                    state.move_to_folder(0)
+            self.assertEqual(paths[0].read_bytes(), b"source")
+
     def test_web_review_rescan_command_includes_ui_accuracy_settings(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -906,6 +983,40 @@ class FingerprintTests(unittest.TestCase):
                 self.assertEqual(apply_response.status, 200)
                 self.assertEqual(apply_payload["appliedSetCount"], 1)
                 apply_reviewed.assert_called_once_with([])
+
+                file_action_body = json.dumps({"fileId": 0}).encode()
+                action_headers = {
+                    "Content-Type": "application/json",
+                    "Content-Length": str(len(file_action_body)),
+                    "X-Video-Dedup-Review": "1",
+                }
+                with mock.patch.object(
+                    state, "open_in_folder", return_value={"ok": True, "path": str(paths[0])}
+                ) as open_in_folder:
+                    connection.request(
+                        "POST", "/api/open-in-folder", body=file_action_body,
+                        headers=action_headers,
+                    )
+                    open_response = connection.getresponse()
+                    open_payload = json.loads(open_response.read())
+                self.assertEqual(open_response.status, 200)
+                self.assertTrue(open_payload["ok"])
+                open_in_folder.assert_called_once_with(0)
+
+                with mock.patch.object(
+                    state,
+                    "move_to_folder",
+                    return_value={"ok": True, "cancelled": True, "moved": False},
+                ) as move_to_folder:
+                    connection.request(
+                        "POST", "/api/move-to-folder", body=file_action_body,
+                        headers=action_headers,
+                    )
+                    move_response = connection.getresponse()
+                    move_payload = json.loads(move_response.read())
+                self.assertEqual(move_response.status, 200)
+                self.assertTrue(move_payload["cancelled"])
+                move_to_folder.assert_called_once_with(0)
 
                 settings_body = json.dumps({
                     "minimumDeleteCoverage": 97,

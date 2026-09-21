@@ -84,7 +84,9 @@ python .\video_dedup.py web-review .\duplicates.json --plan .\decisions.json
 
 The browser opens automatically and provides video previews, duplicate-range
 timelines, search and sorting, keeper checkboxes, bulk set selection, reusable
-recommendations, undo, review progress, and a save summary. Select a striped
+recommendations, undo, review progress, and a save summary. Every video card can
+reveal the selected file in the system file manager or move it with a native
+folder browser; moved paths are saved back to the report. Select a striped
 timeline segment to jump to the matching footage. Large sets are paged so only
 twelve video players are loaded at once. If the named plan already exists, its
 decisions are resumed.
@@ -217,7 +219,9 @@ videos with alternate audio, commentary, or dubbing before removing them.
 - `--min-duplicate-percent 95`: only report a pair when either video's matched
   timeline reaches the requested percentage. The default `0` preserves all
   sufficiently long matches.
-- `--hash-distance 20`: visual tolerance; lower reduces false positives.
+- `--hash-distance 20`: visual tolerance for re-encoding and static/floating
+  watermarks; lower reduces false positives. The browser exposes the same
+  control as **Watermark and re-encode tolerance**.
 - `--candidate-tokens 512`: memory/recall tradeoff for the 10k-file index.
 - `--max-candidates-per-video 50`: bounds worst-case confirmation work.
 - `--workers 4`: simultaneous FFmpeg processes.
@@ -225,9 +229,21 @@ videos with alternate audio, commentary, or dubbing before removing them.
 The scanner first indexes perceptual hashes of key frames, ignores overly common
 visual tokens and flat frames, and only fully decodes likely candidates. The fast
 pass probes metadata once and emits at most `--max-fast-frames` time-spaced key
-frames, avoiding a second key-frame decode. Results are probabilistic: heavy
-cropping, overlays, speed changes, mirrored video, or a library dominated by
-nearly identical static footage may require tuning and manual review.
+frames, avoiding a second key-frame decode.
+
+Watermark handling is automatic: each sampled frame includes a whole-frame
+fingerprint and a 3-by-3 grid of independently normalized regional fingerprints.
+Regional matching discounts the two most different regions and requires agreement
+across most of the picture. The discounted regions can change from frame to frame,
+so fixed corner/center logos and moving watermarks can be matched, including
+copies with different watermarks. A shared logo alone is insufficient for the
+regional check; blank regions do not count as matching content. Matches still
+require a consistent timeline segment. Regional fingerprints increase extraction,
+comparison, and cache costs; the candidate token and pair limits remain bounded.
+
+Results are probabilistic: large or full-screen overlays, low-detail footage,
+heavy cropping, speed changes, mirrored video, or a library dominated by nearly
+identical static footage may require tuning and manual review.
 
 Successful fast/detailed fingerprints and exact SHA-256 hashes are cached by
 path, size, and nanosecond modification time. Decode failures are cached too, so
@@ -236,6 +252,11 @@ automatically; use `--retry-failures` after changing the FFmpeg installation or
 when a transient failure has cleared. Cache writes are committed in small
 batches; an interruption can lose only the current batch, and completed prior
 batches remain reusable.
+
+After upgrading from a version before 1.6, rerun your scan to detect watermark
+variants in existing libraries. Old reports do not change automatically. The
+first rescan rebuilds visual fingerprints under a new cache version; cached
+exact SHA-256 hashes are retained. Later scans reuse the regional fingerprints.
 
 ## JSON policy and safety
 
