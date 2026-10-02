@@ -44,17 +44,41 @@ export async function fetchRecommendations(
   return payload.decisions
 }
 
-export function savePlan(decisions: Decision[]): Promise<SaveResult> {
+export function savePlan(decisions: Decision[], name?: string): Promise<SaveResult> {
   return requestJson<SaveResult>('/api/plan', {
     method: 'POST',
-    body: JSON.stringify({ decisions }),
+    body: JSON.stringify({ decisions, name }),
   })
 }
 
-export function applyReviewed(decisions: Decision[]): Promise<ApplyReviewedResult> {
+export type SavedPlan = {
+  id: string
+  runId: string
+  name: string
+  createdAt: string
+  updatedAt: string
+  decisionCount: number
+  roots: string[]
+}
+
+export type PlanPage = { items: SavedPlan[]; page: number; pageSize: number; total: number }
+
+export function fetchPlans(page = 1): Promise<PlanPage> {
+  return requestJson(`/api/plans?page=${page}&pageSize=10`)
+}
+
+export function loadSavedPlan(plan: SavedPlan): Promise<SessionPayload> {
+  return requestJson('/api/plans/load', { method: 'POST', body: JSON.stringify({ id: plan.id, runId: plan.runId }) })
+}
+
+export function renameSavedPlan(plan: SavedPlan, name: string): Promise<{ ok: true }> {
+  return requestJson('/api/plans/rename', { method: 'POST', body: JSON.stringify({ id: plan.id, runId: plan.runId, name }) })
+}
+
+export function applyReviewed(decisions: Decision[], permanent = false, confirmation = ''): Promise<ApplyReviewedResult> {
   return requestJson<ApplyReviewedResult>('/api/apply-reviewed', {
     method: 'POST',
-    body: JSON.stringify({ decisions }),
+    body: JSON.stringify({ decisions, permanent, confirmation }),
   })
 }
 
@@ -90,4 +114,11 @@ export function startRescan(settings: EditableSettings): Promise<RescanStatus> {
 
 export function fetchRescanStatus(): Promise<RescanStatus> {
   return requestJson<RescanStatus>('/api/rescan-status')
+}
+
+export function fetchApplyStatus(): Promise<RescanStatus> {
+  return requestJson<RescanStatus>('/api/apply-status')
+}
+export function chooseScanFolder(): Promise<{ path: string | null }> {
+  return requestJson('/api/choose-scan-folder', { method: 'POST', body: '{}' })
 }

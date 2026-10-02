@@ -59,11 +59,14 @@ export type DetectionSettings = {
   sampleInterval: number
   minimumSegment: number
   hashDistance: number
+  roots?: string[]
   rescanAvailable: boolean
 }
 
 export type RescanStatus = {
   state: 'idle' | 'running' | 'completed' | 'failed'
+  completed?: number
+  total?: number | null
   message?: string
 }
 

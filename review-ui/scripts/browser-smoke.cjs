@@ -133,7 +133,7 @@ async function main() {
     await reviewWorkspace.getByText('Set 3', { exact: true }).waitFor()
 
     await page.getByRole('button', { name: 'Apply reviewed' }).click()
-    const applyDialog = page.getByRole('dialog', { name: 'Quarantine reviewed removals?' })
+    const applyDialog = page.getByRole('dialog', { name: 'Apply reviewed removals?' })
     await applyDialog.getByText(/Unreviewed sets stay untouched/i).waitFor()
     await applyDialog.getByText(/removed from the active plan and review queue/i).waitFor()
     await applyDialog.getByRole('button', { name: 'Cancel' }).click()

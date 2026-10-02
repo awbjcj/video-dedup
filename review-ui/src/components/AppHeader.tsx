@@ -24,6 +24,7 @@ type AppHeaderProps = {
   onOpenSettings: () => void
   onApply: () => void
   onSave: () => void
+  onOpenPlans: () => void
 }
 export function AppHeader({
   reportPath,
@@ -44,11 +45,15 @@ export function AppHeader({
   onOpenSettings,
   onApply,
   onSave,
+  onOpenPlans,
 }: AppHeaderProps) {
   const progress = groupCount ? (decidedCount / groupCount) * 100 : 0
 
   return (
     <header className="relative z-20 border-b border-slate-800 bg-[#080f1e] text-white shadow-lg shadow-slate-950/10">
+      <div className="flex justify-end border-b border-slate-800 px-4 py-1">
+        <Button variant="ghost" disabled={saving || applying} onClick={onOpenPlans}>Saved plans</Button>
+      </div>
       <div className="grid items-center gap-4 px-4 py-4 sm:grid-cols-[minmax(0,1fr)_auto] lg:px-6 xl:grid-cols-[minmax(270px,1fr)_minmax(500px,1.65fr)_auto] xl:gap-6">
         <div className="flex min-w-0 items-center gap-3">
           <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-amber-400 text-slate-950 shadow-[0_8px_24px_rgb(251_191_36_/_0.18)]">

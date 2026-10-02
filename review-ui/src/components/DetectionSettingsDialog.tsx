@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Info, LoaderCircle, ScanSearch, ShieldCheck, SlidersHorizontal } from 'lucide-react'
 
+import { chooseScanFolder } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -94,8 +95,21 @@ export function DetectionSettingsDialog({
 }: DetectionSettingsDialogProps) {
   const [draft, setDraft] = useState<EditableSettings>(() => editable(settings))
 
+  const [folderError, setFolderError] = useState('')
+  const [choosingFolder, setChoosingFolder] = useState(false)
+  async function browseFolder() {
+    setChoosingFolder(true)
+    setFolderError('')
+    try {
+      const { path } = await chooseScanFolder()
+      if (path) setDraft(current => ({ ...current, roots: [...new Set([...(current.roots || []), path])] }))
+    } catch (error) {
+      setFolderError(error instanceof Error ? error.message : 'Could not open folder picker. Enter a path below.')
+    } finally { setChoosingFolder(false) }
+  }
+
   const validationMessage = useMemo(() => {
-    const values = Object.values(draft)
+    const values = Object.entries(draft).filter(([key]) => key !== 'roots').map(([, value]) => value)
     if (values.some((value) => !Number.isFinite(value))) return 'Every setting needs a valid number.'
     if (draft.minimumDuplicatePercent < 0 || draft.minimumDuplicatePercent > 100) return 'Duplicate percentage must be from 0 to 100.'
     if (draft.minimumDeleteCoverage < 0 || draft.minimumDeleteCoverage > 100) return 'Delete coverage must be from 0 to 100.'
@@ -107,7 +121,7 @@ export function DetectionSettingsDialog({
   }, [draft])
 
   const loweringBelowReport = draft.minimumDuplicatePercent < settings.reportMinimumDuplicatePercent
-  const scanChanged = draft.sampleInterval !== settings.sampleInterval
+  const scanChanged = JSON.stringify(draft.roots) !== JSON.stringify(settings.roots) || draft.sampleInterval !== settings.sampleInterval
     || draft.minimumSegment !== settings.minimumSegment
     || draft.hashDistance !== settings.hashDistance
     || loweringBelowReport
@@ -130,6 +144,14 @@ export function DetectionSettingsDialog({
         </DialogHeader>
 
         <div className="min-h-0 flex-1 space-y-7 overflow-y-auto px-5 py-5 sm:px-6">
+          <fieldset disabled={rescanning || applying} className="space-y-3">
+            <legend className="text-sm font-semibold uppercase tracking-wide text-amber-800">Folders to scan</legend>
+            <p className="text-sm text-slate-600">Choose folders on the computer running Video Dedup. Add one folder at a time, or enter full paths below, one per line.</p>
+            <Label htmlFor="scan-folders">Folder paths</Label>
+            <textarea id="scan-folders" className="min-h-24 w-full rounded-md border border-stone-300 bg-white p-3 font-mono text-sm" value={(draft.roots || []).join('\n')} onChange={event => setDraft(current => ({ ...current, roots: event.target.value.split('\n') }))} />
+            <Button type="button" variant="outline" disabled={choosingFolder} onClick={() => void browseFolder()}>{choosingFolder ? 'Choosing folder…' : 'Browse for folder…'}</Button>
+            {folderError ? <p role="alert" className="text-sm text-rose-700">{folderError}</p> : null}
+          </fieldset>
           <fieldset>
             <legend className="mb-1 text-sm font-semibold uppercase tracking-wide text-amber-800">Current review</legend>
             <p className="mb-4 text-sm text-slate-600">These settings can be applied immediately to the existing report. Lowering duplicate coverage below the report's scan threshold requires a rescan.</p>
@@ -235,7 +257,7 @@ export function DetectionSettingsDialog({
           <Button
             type="button"
             variant="outline"
-            disabled={Boolean(validationMessage) || !reviewChanged || loweringBelowReport || hasUnsavedChanges || applying || rescanning}
+            disabled={Boolean(validationMessage) || !reviewChanged || scanChanged || hasUnsavedChanges || applying || rescanning}
             onClick={() => onApplyReviewSettings(draft)}
           >
             <ShieldCheck className="mr-2 h-4 w-4" aria-hidden="true" />
@@ -243,8 +265,8 @@ export function DetectionSettingsDialog({
           </Button>
           <Button
             type="button"
-            disabled={Boolean(validationMessage) || !settings.rescanAvailable || hasUnsavedChanges || applying || rescanning || (!scanChanged && !reviewChanged)}
-            onClick={() => onRescan(draft)}
+            disabled={Boolean(validationMessage) || !(draft.roots || []).some(root => root.trim()) || choosingFolder || hasUnsavedChanges || applying || rescanning}
+            onClick={() => onRescan({ ...draft, roots: (draft.roots || []).map(root => root.trim()).filter(Boolean) })}
           >
             {rescanning ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" /> : <ScanSearch className="mr-2 h-4 w-4" aria-hidden="true" />}
             {rescanning ? 'Rescanning…' : 'Rescan with all settings'}

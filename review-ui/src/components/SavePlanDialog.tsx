@@ -1,4 +1,6 @@
 import { AlertTriangle, FileCheck2, ShieldCheck } from 'lucide-react'
+import { useState } from 'react'
+import { Input } from '@/components/ui/input'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -20,7 +22,7 @@ type SavePlanDialogProps = {
   removalCount: number
   estimatedReclaim: number
   onOpenChange: (open: boolean) => void
-  onConfirm: () => void
+  onConfirm: (name: string) => void
 }
 export function SavePlanDialog({
   open,
@@ -34,9 +36,10 @@ export function SavePlanDialog({
   onConfirm,
 }: SavePlanDialogProps) {
   const unresolved = groupCount - decidedCount
+  const [name, setName] = useState(() => `Review ${new Date().toLocaleString()}`)
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(value) => { if (!saving) onOpenChange(value) }}>
       <DialogContent className="max-w-xl rounded-xl border-slate-200 bg-[#fbfaf7] surface-shadow-strong">
         <DialogHeader>
           <div className="mb-2 flex h-10 w-10 items-center justify-center rounded-xl bg-amber-100 text-amber-800">
@@ -47,6 +50,12 @@ export function SavePlanDialog({
             This writes a JSON plan only. No video is moved or deleted until you run the separate apply command.
           </DialogDescription>
         </DialogHeader>
+
+        <div className="space-y-2">
+          <label htmlFor="plan-name" className="text-sm font-medium">Plan name</label>
+          <Input id="plan-name" value={name} maxLength={120} disabled={saving} onChange={(event) => setName(event.target.value)} aria-describedby="plan-name-help" />
+          <p id="plan-name-help" className="text-sm text-slate-600">Saves a new snapshot with your decisions and scan settings. Find it later in Saved plans.</p>
+        </div>
 
         <dl className="grid grid-cols-1 gap-px overflow-hidden rounded-xl border bg-slate-200 text-base sm:grid-cols-2">
           <div className="bg-white p-4"><dt className="text-slate-600">Reviewed sets</dt><dd className="mt-1 font-mono font-semibold">{decidedCount} / {groupCount}</dd></div>
@@ -71,7 +80,7 @@ export function SavePlanDialog({
           <Button type="button" variant="outline" disabled={saving} onClick={() => onOpenChange(false)}>
             Continue reviewing
           </Button>
-          <Button type="button" disabled={saving} onClick={onConfirm}>
+          <Button type="button" disabled={saving || !name.trim()} onClick={() => onConfirm(name.trim())}>
             <ShieldCheck className="mr-2 h-4 w-4" aria-hidden="true" /> {saving ? 'Saving plan…' : 'Save plan safely'}
           </Button>
         </DialogFooter>

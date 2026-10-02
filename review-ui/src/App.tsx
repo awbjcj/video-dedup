@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useReducer, useState } from 'react'
+import { useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { AlertCircle, LoaderCircle, RefreshCw } from 'lucide-react'
 import { toast, Toaster } from 'sonner'
 
+import { OperationProgress } from '@/components/OperationProgress'
 import { AppHeader } from '@/components/AppHeader'
 import { ApplyReviewedDialog } from '@/components/ApplyReviewedDialog'
 import { BulkToolbar } from '@/components/BulkToolbar'
@@ -9,9 +10,11 @@ import { DetectionSettingsDialog } from '@/components/DetectionSettingsDialog'
 import { ReviewSidebar } from '@/components/ReviewSidebar'
 import { ReviewWorkspace } from '@/components/ReviewWorkspace'
 import { SavePlanDialog } from '@/components/SavePlanDialog'
+import { PlanLibraryDialog } from '@/components/PlanLibraryDialog'
 import { Button } from '@/components/ui/button'
 import {
   applyReviewed,
+  fetchApplyStatus,
   fetchRecommendations,
   fetchRescanStatus,
   fetchSession,
@@ -66,6 +69,7 @@ function reviewReducer(state: ReviewState, action: ReviewAction): ReviewState {
 }
 
 function App() {
+  const pendingScanRefresh = useRef(false)
   const [session, setSession] = useState<SessionPayload | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [activeGroupId, setActiveGroupId] = useState(1)
@@ -76,10 +80,12 @@ function App() {
   const [recommending, setRecommending] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saveDialogOpen, setSaveDialogOpen] = useState(false)
+  const [plansOpen, setPlansOpen] = useState(false)
   const [applyingReviewed, setApplyingReviewed] = useState(false)
   const [applyDialogOpen, setApplyDialogOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [applyingSettings, setApplyingSettings] = useState(false)
+  const [applyStatus, setApplyStatus] = useState<RescanStatus>({ state: 'idle' })
   const [rescanStatus, setRescanStatus] = useState<RescanStatus>({ state: 'idle' })
   const [review, dispatch] = useReducer(reviewReducer, {
     decisions: new Map(),
@@ -108,25 +114,35 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (rescanStatus.state !== 'running') return
-    const timer = window.setInterval(() => {
-      fetchRescanStatus()
-        .then(async (status) => {
-          setRescanStatus(status)
-          if (status.state !== 'completed') return
+    let cancelled = false
+    let timer: number
+    let wasRunning = false
+    async function poll() {
+      try {
+        const [scan, removal] = await Promise.all([fetchRescanStatus(), fetchApplyStatus()])
+        if (cancelled) return
+        const running = scan.state === 'running' || removal.state === 'running'
+        if ((wasRunning || pendingScanRefresh.current) && !running) {
           const payload = await fetchSession()
+          if (cancelled) return
+          pendingScanRefresh.current = false
           setSession(payload)
           dispatch({ type: 'hydrate', decisions: payload.initialDecisions })
           setSelectedGroupIds(new Set())
           setActiveGroupId(payload.groups[0]?.id ?? 1)
-          toast.success('Rescan complete', { description: 'The review now uses the updated detection settings.' })
-        })
-        .catch((error: unknown) => {
-          setRescanStatus({ state: 'failed', message: error instanceof Error ? error.message : 'Could not read rescan status.' })
-        })
-    }, 1000)
-    return () => window.clearInterval(timer)
-  }, [rescanStatus.state])
+        }
+        setRescanStatus(scan)
+        setApplyStatus(removal)
+        wasRunning = running
+      } catch {
+        // Keep the last known operation state; reconnect on the next poll.
+      } finally {
+        if (!cancelled) timer = window.setTimeout(() => void poll(), 1000)
+      }
+    }
+    void poll()
+    return () => { cancelled = true; window.clearTimeout(timer) }
+  }, [])
 
   useEffect(() => {
     function warnBeforeClose(event: BeforeUnloadEvent) {
@@ -240,10 +256,10 @@ function App() {
     toast.success(`Marked ${decisions.length} sets as reviewed — keep all`)
   }
 
-  async function confirmSave() {
+  async function confirmSave(name: string) {
     setSaving(true)
     try {
-      const result = await savePlan([...review.decisions.values()])
+      const result = await savePlan([...review.decisions.values()], name)
       dispatch({ type: 'saved' })
       setSaveDialogOpen(false)
       toast.success(`Plan saved with ${result.actionCount} safe removal${result.actionCount === 1 ? '' : 's'}`, {
@@ -259,10 +275,10 @@ function App() {
     }
   }
 
-  async function confirmApplyReviewed() {
+  async function confirmApplyReviewed(permanent: boolean, confirmation: string) {
     setApplyingReviewed(true)
     try {
-      const result = await applyReviewed([...review.decisions.values()])
+      const result = await applyReviewed([...review.decisions.values()], permanent, confirmation)
       setSession(result.session)
       dispatch({ type: 'hydrate', decisions: result.session.initialDecisions })
       setSelectedGroupIds(new Set())
@@ -271,12 +287,12 @@ function App() {
       setApplyDialogOpen(false)
       if (result.failedFileCount) {
         toast.warning(`Applied ${result.appliedSetCount} reviewed set${result.appliedSetCount === 1 ? '' : 's'} with refusals`, {
-          description: `${result.appliedFileCount} file${result.appliedFileCount === 1 ? '' : 's'} moved; ${result.failedSetCount} set${result.failedSetCount === 1 ? '' : 's'} remain in the plan.`,
+          description: `${result.appliedFileCount} file${result.appliedFileCount === 1 ? '' : 's'} ${permanent ? 'deleted' : 'quarantined'}; ${result.failedSetCount} set${result.failedSetCount === 1 ? '' : 's'} remain in the plan.`,
           duration: 9000,
         })
       } else {
         toast.success(`Applied and cleared ${result.appliedSetCount} reviewed set${result.appliedSetCount === 1 ? '' : 's'}`, {
-          description: `${result.appliedFileCount} file${result.appliedFileCount === 1 ? '' : 's'} moved to quarantine, reclaiming ${formatBytes(result.reclaimBytes)}.`,
+          description: `${result.appliedFileCount} file${result.appliedFileCount === 1 ? '' : 's'} ${permanent ? 'permanently deleted' : 'moved to quarantine'} (${formatBytes(result.reclaimBytes)}).`,
           duration: 8000,
         })
       }
@@ -339,7 +355,9 @@ function App() {
 
   async function rescanWithSettings(settings: Omit<DetectionSettings, 'rescanAvailable' | 'reportMinimumDuplicatePercent'>) {
     try {
+      setRescanStatus({ state: 'running', message: 'Starting scan…' })
       const status = await startRescan(settings)
+      pendingScanRefresh.current = true
       setRescanStatus(status)
       toast.info('Rescan started', { description: 'Cached fingerprints will be reused when possible.' })
     } catch (error) {
@@ -348,6 +366,8 @@ function App() {
       toast.error('Rescan could not start', { description: message })
     }
   }
+
+  const operationBusy = applyingReviewed || rescanStatus.state === 'running' || applyStatus.state === 'running'
 
   if (loadError) {
     return (
@@ -394,16 +414,20 @@ function App() {
         selectedRemovalCount={selectedRemovalCount}
         estimatedReclaim={estimatedReclaim}
         dirty={review.dirty}
-        canUndo={review.history.length > 0}
-        canApply={actionableReviewedSetCount > 0}
-        saving={saving}
-        applying={applyingReviewed}
+        canUndo={review.history.length > 0 && !operationBusy}
+        canApply={actionableReviewedSetCount > 0 && !operationBusy}
+        saving={saving || operationBusy}
+        applying={operationBusy}
         onUndo={() => dispatch({ type: 'undo' })}
         onOpenSettings={() => setSettingsOpen(true)}
         onApply={() => setApplyDialogOpen(true)}
         onSave={() => setSaveDialogOpen(true)}
+        onOpenPlans={() => setPlansOpen(true)}
       />
 
+      <OperationProgress title="Scan" status={rescanStatus} />
+      <OperationProgress title="File removal" status={applyStatus} />
+      <fieldset disabled={operationBusy} className="contents">
       {activeGroup ? <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[21rem_auto] lg:grid-cols-[350px_minmax(0,1fr)] lg:grid-rows-1 xl:grid-cols-[370px_minmax(0,1fr)]">
         <ReviewSidebar
           groups={session.groups}
@@ -436,7 +460,7 @@ function App() {
           <BulkToolbar
             selectedCount={selectedGroupIds.size}
             strategy={bulkStrategy}
-            busy={recommending}
+            busy={recommending || operationBusy}
             onStrategyChange={setBulkStrategy}
             onApplyStrategy={() => void applyRecommendation([...selectedGroupIds], bulkStrategy)}
             onKeepAll={keepAllSelected}
@@ -446,7 +470,7 @@ function App() {
             key={activeGroup.id}
             group={activeGroup}
             decision={review.decisions.get(activeGroup.id)}
-            busy={recommending}
+            busy={recommending || operationBusy}
             previousGroupId={previousGroupId}
             nextGroupId={nextGroupId}
             onDecision={(decision) => dispatch({ type: 'set-many', decisions: [decision] })}
@@ -472,10 +496,11 @@ function App() {
         </main>
       )}
 
+      </fieldset>
       {settingsOpen ? <DetectionSettingsDialog
         open={settingsOpen}
         settings={session.settings}
-        applying={applyingSettings}
+        applying={applyingSettings || operationBusy}
         hasUnsavedChanges={review.dirty}
         rescanStatus={rescanStatus}
         onOpenChange={setSettingsOpen}
@@ -483,26 +508,36 @@ function App() {
         onRescan={(settings) => void rescanWithSettings(settings)}
       /> : null}
 
-      <SavePlanDialog
+      {plansOpen && <PlanLibraryDialog dirty={review.dirty || rescanStatus.state === 'running'} onClose={() => setPlansOpen(false)} onLoad={(payload) => {
+        setSession(payload)
+        dispatch({ type: 'hydrate', decisions: payload.initialDecisions })
+        setSelectedGroupIds(new Set())
+        setActiveGroupId(payload.groups[0]?.id ?? 1)
+        setFilter('all')
+        setGroupQuery('')
+        setPlansOpen(false)
+      }} />}
+      {saveDialogOpen && <SavePlanDialog
         open={saveDialogOpen}
-        saving={saving}
+        saving={saving || operationBusy}
         planPath={session.planPath}
         decidedCount={review.decisions.size}
         groupCount={session.summary.groupCount}
         removalCount={selectedRemovalCount}
         estimatedReclaim={estimatedReclaim}
         onOpenChange={setSaveDialogOpen}
-        onConfirm={() => void confirmSave()}
-      />
-      <ApplyReviewedDialog
+        onConfirm={(name) => void confirmSave(name)}
+      />}
+      {applyDialogOpen ? <ApplyReviewedDialog
         open={applyDialogOpen}
-        applying={applyingReviewed}
+        applying={operationBusy}
         reviewedSetCount={actionableReviewedSetCount}
         removalCount={selectedRemovalCount}
         estimatedReclaim={estimatedReclaim}
         onOpenChange={setApplyDialogOpen}
-        onConfirm={() => void confirmApplyReviewed()}
-      />
+        status={applyStatus}
+        onConfirm={(permanent, confirmation) => void confirmApplyReviewed(permanent, confirmation)}
+      /> : null}
       <Toaster position="bottom-right" richColors closeButton />
     </div>
   )
