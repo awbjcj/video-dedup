@@ -25,3 +25,4 @@ htmlcov/
 .pytype/
 .pyright/
 .ruff_cache/
+runs/

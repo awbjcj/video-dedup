@@ -32,6 +32,7 @@ import time
 import urllib.parse
 import webbrowser
 import zlib
+import run_store
 from array import array
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -1238,6 +1239,36 @@ def load_detailed_records(
 
 
 def scan(args: argparse.Namespace) -> int:
+    """Keep each attempt, including failures, separate from the compatibility export."""
+    output = Path(args.report).expanduser().resolve()
+    root = Path(getattr(args, "runs_dir", None) or output.parent / "runs").expanduser().resolve()
+    options = {key: value for key, value in vars(args).items() if not callable(value)}
+    directory = run_store.create_run(root, {
+        "status": "running", "tool_version": VERSION, "options": options,
+        "roots": [str(Path(folder).expanduser().resolve()) for folder in args.folders],
+        "export_report": str(output),
+    })
+    metadata = run_store.read_json(directory / "run.json")
+    scan_args = argparse.Namespace(**vars(args))
+    scan_args.report = str(directory / "report.json")
+    try:
+        result = _scan(scan_args)
+        report = run_store.read_json(directory / "report.json")
+        report.update(run_id=directory.name, run_directory=str(directory))
+        run_store.write_json(directory / "report.json", report)
+        run_store.write_json(directory / "scan-report.json", report)
+        run_store.write_json(output, report)
+        metadata.update(status="completed", summary=report["summary"], settings=report["settings"])
+        return result
+    except BaseException as exc:
+        metadata.update(status="interrupted" if isinstance(exc, KeyboardInterrupt) else "failed", error=str(exc))
+        raise
+    finally:
+        metadata["finished_at"] = run_store.timestamp()
+        run_store.write_json(directory / "run.json", metadata)
+
+
+def _scan(args: argparse.Namespace) -> int:
     extensions = {
         item.lower() if item.startswith(".") else f".{item.lower()}"
         for item in args.extensions.split(",")
@@ -1372,7 +1403,7 @@ def scan(args: argparse.Namespace) -> int:
         }
         output = Path(args.report).expanduser().resolve()
         output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        run_store.write_json(output, report)
         log(f"Report written to {output}")
         print(json.dumps({"ok": True, "report": str(output), **summary}, indent=2))
         return 0
@@ -2194,7 +2225,7 @@ root.update()
 try:
     selected = filedialog.askdirectory(
         parent=root,
-        title="Choose where to move the video",
+        title="Choose a folder",
         initialdir=os.environ.get("VIDEO_DEDUP_INITIAL_FOLDER") or None,
         mustexist=True,
     )
@@ -2233,6 +2264,25 @@ finally:
     return Path(selected) if selected else None
 
 
+def serialize_plan_saves(method):
+    def guarded(self, *args, **kwargs):
+        with self.save_queue_lock:
+            return method(self, *args, **kwargs)
+    return guarded
+
+
+def exclusive_review_operation(method):
+    """Reject overlapping mutations instead of queuing stale review decisions."""
+    def guarded(self, *args, **kwargs):
+        if not self.operation_lock.acquire(blocking=False):
+            raise ValueError("Wait for the active scan or file operation to finish.")
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            self.operation_lock.release()
+    return guarded
+
+
 @dataclass
 class WebReviewState:
     report_path: Path
@@ -2251,6 +2301,8 @@ class WebReviewState:
     hash_distance: int = 20
     minimum_segment: float = 9.0
     scan_options: dict = field(default_factory=dict, repr=False)
+    runs_root: Path = field(default_factory=lambda: Path("runs"), repr=False)
+    run_directory: Path | None = field(default=None, repr=False)
     group_matches: dict[int, list[dict]] = field(init=False, repr=False)
     group_payloads: list[dict] = field(init=False, repr=False)
     source_files: dict[int, dict] = field(init=False, repr=False)
@@ -2268,7 +2320,21 @@ class WebReviewState:
         repr=False,
     )
 
+    save_queue_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+    operation_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+    apply_status: dict = field(default_factory=lambda: {"state": "idle"}, init=False)
+
+    def get_apply_status(self) -> dict:
+        with self.rescan_lock:
+            return dict(self.apply_status)
+
+    def _apply_progress(self, **values) -> None:
+        with self.rescan_lock:
+            self.apply_status = {**self.apply_status, **values}
+
     def __post_init__(self) -> None:
+        if not self.runs_root.is_absolute():
+            self.runs_root = (self.report_path.parent / self.runs_root).resolve()
         self.source_files = dict(self.files)
         self.source_matches = list(self.matches)
         self._rebuild_review_data()
@@ -2352,6 +2418,7 @@ class WebReviewState:
             raise ValueError(f"{label} must be a number from 0 to 100.")
         return parsed
 
+    @exclusive_review_operation
     def update_settings(self, payload: dict) -> dict:
         minimum_coverage = self._percentage(
             payload.get("minimumDeleteCoverage"), "Minimum delete coverage"
@@ -2397,8 +2464,12 @@ class WebReviewState:
             raise ValueError("Minimum matching segment must be greater than zero.")
         if not 0 <= hash_distance <= 136:
             raise ValueError("Watermark tolerance must be between 0 and 136.")
-        if not self.roots:
-            raise ValueError("This report does not contain scan roots, so it cannot be rescanned from the UI.")
+        roots = payload.get("roots", self.roots)
+        if not isinstance(roots, list) or not roots or any(not isinstance(root, str) or not root.strip() for root in roots):
+            raise ValueError("Choose at least one scan folder.")
+        roots = list(dict.fromkeys(str(Path(root).expanduser().resolve()) for root in roots))
+        if any(not Path(root).is_dir() for root in roots):
+            raise ValueError("Every scan folder must be an existing directory on this computer.")
 
         cache_path = str(
             self.scan_options.get("cache_path")
@@ -2408,11 +2479,13 @@ class WebReviewState:
             sys.executable,
             str(Path(__file__).resolve()),
             "scan",
-            *self.roots,
+            *roots,
             "--depth",
             str(int(self.scan_options.get("depth", 2))),
             "--report",
-            str(self.report_path),
+            str(self.runs_root / "latest-report.json"),
+            "--runs-dir",
+            str(self.runs_root),
             "--cache",
             cache_path,
             "--workers",
@@ -2454,26 +2527,35 @@ class WebReviewState:
 
     def start_rescan(self, payload: dict) -> dict:
         command, settings = self._rescan_command(payload)
+        if not self.operation_lock.acquire(blocking=False):
+            raise ValueError("Wait for the active scan or file operation to finish.")
         with self.rescan_lock:
-            if self.rescan_status.get("state") == "running":
-                raise ValueError("A rescan is already running.")
             self.rescan_status = {"state": "running", "message": "Scanning the configured folders…"}
 
         def run_rescan() -> None:
             try:
-                completed = subprocess.run(
-                    command,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
+                with subprocess.Popen(
+                    command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, encoding="utf-8", errors="replace", bufsize=1,
                     creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
-                )
-                if completed.returncode:
-                    message = completed.stderr.strip().splitlines()[-1:] or completed.stdout.strip().splitlines()[-1:]
-                    raise DedupError(message[0] if message else f"Scan exited with code {completed.returncode}.")
-                _, report = load_json(str(self.report_path))
+                ) as process:
+                    assert process.stdout is not None
+                    last_line = ""
+                    for line in process.stdout:
+                        last_line = line.strip()
+                        if not last_line or not re.match(r"[A-Za-z]", last_line):
+                            continue
+                        progress = re.search(r"([\d,]+)/([\d,]+)", last_line)
+                        with self.rescan_lock:
+                            self.rescan_status = {"state": "running", "message": last_line}
+                            if progress:
+                                self.rescan_status.update(completed=int(progress[1].replace(",", "")), total=int(progress[2].replace(",", "")))
+                    if process.wait():
+                        raise DedupError(last_line or "Scan failed.")
+                _, report = load_json(str(self.runs_root / "latest-report.json"))
+                self.run_directory = Path(report["run_directory"])
+                self.report_path = self.run_directory / "report.json"
+                self.plan_path = self.run_directory / "review-plan.json"
                 report_settings = report.get("settings") or {}
                 self.source_files = {
                     int(item["id"]): item for item in report.get("files") or []
@@ -2498,6 +2580,9 @@ class WebReviewState:
             except Exception as exc:
                 with self.rescan_lock:
                     self.rescan_status = {"state": "failed", "message": str(exc)}
+
+            finally:
+                self.operation_lock.release()
 
         threading.Thread(target=run_rescan, daemon=True, name="video-dedup-rescan").start()
         return self.get_rescan_status()
@@ -2555,6 +2640,7 @@ class WebReviewState:
         finally:
             temporary_path.unlink(missing_ok=True)
 
+    @exclusive_review_operation
     def move_to_folder(self, raw_file_id: object) -> dict:
         if self.get_rescan_status().get("state") == "running":
             raise ValueError("Wait for the active rescan to finish before moving a video.")
@@ -2657,7 +2743,8 @@ class WebReviewState:
                 "sampleInterval": self.interval,
                 "minimumSegment": self.minimum_segment,
                 "hashDistance": self.hash_distance,
-                "rescanAvailable": bool(self.roots),
+                "rescanAvailable": True,
+                "roots": self.roots,
             },
             "summary": {
                 "groupCount": len(self.groups),
@@ -2797,10 +2884,28 @@ class WebReviewState:
         finally:
             temporary_path.unlink(missing_ok=True)
 
-    def save_plan(self, raw_decisions: object) -> dict:
+    @serialize_plan_saves
+    @exclusive_review_operation
+    def save_plan(self, raw_decisions: object, name: object = None) -> dict:
+        name = run_store.validate_name(name if name is not None else "Review " + run_store.timestamp())
         submitted = self._parse_web_decisions(raw_decisions)
         plan, actions, unresolved_count = self._web_plan_payload(submitted)
         with self.save_lock:
+            if self.run_directory is None:
+                source = run_store.read_json(self.report_path)
+                self.run_directory = run_store.create_run(self.runs_root, {
+                    "status": "imported", "tool_version": VERSION,
+                    "source_report": str(self.report_path), "roots": self.roots,
+                    "finished_at": run_store.timestamp(),
+                })
+                source.update(run_id=self.run_directory.name, run_directory=str(self.run_directory))
+                run_store.write_json(self.run_directory / "scan-report.json", source)
+                run_store.write_json(self.run_directory / "report.json", source)
+            plan_id = run_store.new_id()
+            plan.update(name=name, plan_id=plan_id, run_id=self.run_directory.name,
+                        updated_at=plan["created_at"], review_context=self._review_context(),
+                        web_decisions=raw_decisions)
+            run_store.write_json(self.run_directory / "plans" / (plan_id + ".json"), plan)
             self._write_plan(plan)
             self.decisions = submitted
         return {
@@ -2811,7 +2916,68 @@ class WebReviewState:
             "reclaimBytes": sum(int(action["size_bytes"]) for action in actions),
         }
 
-    def apply_reviewed(self, raw_decisions: object) -> dict:
+    def _review_context(self) -> dict:
+        return {
+            "files": list(self.source_files.values()), "matches": self.source_matches,
+            "roots": self.roots, "scan_options": self.scan_options,
+            "interval": self.interval, "minimum_coverage": self.minimum_coverage,
+            "minimum_duration": self.minimum_duration,
+            "minimum_duplicate_percent": self.minimum_duplicate_percent,
+            "report_minimum_duplicate_percent": self.report_minimum_duplicate_percent,
+            "hash_distance": self.hash_distance, "minimum_segment": self.minimum_segment,
+        }
+
+    @exclusive_review_operation
+    def rename_saved_plan(self, payload: dict) -> dict:
+        name = run_store.validate_name(payload.get("name"))
+        path = run_store.plan_path(self.runs_root, payload.get("runId"), payload.get("id"))
+        plan = run_store.read_json(path)
+        plan.update(name=name, updated_at=run_store.timestamp())
+        run_store.write_json(path, plan)
+        return {"ok": True}
+
+    @exclusive_review_operation
+    def load_saved_plan(self, payload: dict) -> dict:
+        path = run_store.plan_path(self.runs_root, payload.get("runId"), payload.get("id"))
+        plan = run_store.read_json(path)
+        context = plan["review_context"]
+        directory = path.parent.parent
+        candidate = WebReviewState(
+            report_path=directory / "report.json", plan_path=directory / "review-plan.json",
+            files={int(item["id"]): item for item in context["files"]},
+            matches=context["matches"], groups=[], runs_root=self.runs_root,
+            run_directory=directory,
+            **{key: context[key] for key in (
+                "roots", "scan_options", "interval", "minimum_coverage", "minimum_duration",
+                "minimum_duplicate_percent", "report_minimum_duplicate_percent", "hash_distance", "minimum_segment",
+            )},
+        )
+        # Use saved group IDs only against the exact saved report and filters.
+        candidate.decisions = candidate._parse_web_decisions(plan["web_decisions"])
+        candidate._write_plan(plan)
+        for key in ("report_path", "plan_path", "run_directory", "source_files", "source_matches",
+                    "roots", "scan_options", "interval", "minimum_coverage", "minimum_duration",
+                    "minimum_duplicate_percent", "report_minimum_duplicate_percent", "hash_distance", "minimum_segment"):
+            setattr(self, key, getattr(candidate, key))
+        self.decisions = {}
+        self._rebuild_review_data()
+        self.decisions = candidate.decisions
+        return self.session_payload()
+
+    @exclusive_review_operation
+    def apply_reviewed(self, raw_decisions: object, permanent: bool = False, confirmation: str = "") -> dict:
+        if permanent and confirmation != "DELETE":
+            raise ValueError("Type DELETE to confirm permanent deletion.")
+        self._apply_progress(state="running", message="Checking reviewed files…", completed=0, total=None)
+        try:
+            result = self._apply_reviewed(raw_decisions, permanent)
+            self._apply_progress(state="completed", message=f"{result['appliedFileCount']} files {'deleted' if permanent else 'quarantined'}; {result['failedFileCount']} refused; {result['skippedFileCount']} missing.")
+            return result
+        except Exception as exc:
+            self._apply_progress(state="failed", message=str(exc))
+            raise
+
+    def _apply_reviewed(self, raw_decisions: object, permanent: bool) -> dict:
         submitted = self._parse_web_decisions(raw_decisions)
         if not submitted:
             raise ValueError("Review at least one duplicate set before applying the plan.")
@@ -2856,7 +3022,7 @@ class WebReviewState:
         }
         if not requested_by_group:
             raise ValueError(
-                "The reviewed sets contain no coverage-safe files to quarantine."
+                "The reviewed sets contain no coverage-safe files to remove."
             )
         action_requesters: dict[int, list[int]] = defaultdict(list)
         for group_number, file_ids in requested_by_group.items():
@@ -2867,15 +3033,18 @@ class WebReviewState:
             actions_by_group[min(requesters)].append(actions_by_file_id[file_id])
 
         applied: list[dict] = []
+        skipped: list[dict] = []
         failures: list[dict] = []
         completed_groups: set[int] = set()
         moved_file_ids: set[int] = set()
+        missing_file_ids: set[int] = set()
         quarantine: Path | None = None
 
         with self.save_lock:
             ready_groups: dict[int, list[dict]] = {}
             for group_number, actions in actions_by_group.items():
                 group_failures = []
+                ready_actions = []
                 for action in actions:
                     path = Path(str(action["path"]))
                     try:
@@ -2886,18 +3055,27 @@ class WebReviewState:
                             action["mtime_ns"]
                         ):
                             raise DedupError(
-                                "file changed since the report; refusing to quarantine it"
+                                "file changed since the report; refusing to remove it"
                             )
+                        ready_actions.append(action)
+                    except FileNotFoundError:
+                        skipped.append(
+                            {"groupId": group_number, "path": str(path), "reason": "file no longer exists"}
+                        )
+                        missing_file_ids.add(path_to_file_id[str(path)])
                     except Exception as exc:
                         group_failures.append(
                             {"groupId": group_number, "path": str(path), "error": str(exc)}
                         )
                 if group_failures:
                     failures.extend(group_failures)
-                else:
-                    ready_groups[group_number] = actions
+                elif ready_actions:
+                    ready_groups[group_number] = ready_actions
 
-            if ready_groups:
+            total = sum(len(items) for items in ready_groups.values())
+            completed_count = 0
+            self._apply_progress(total=total, completed=0)
+            if ready_groups and not permanent:
                 timestamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
                 quarantine = self.plan_path.parent / f"video-dedup-quarantine-{timestamp}"
                 quarantine.mkdir(parents=True, exist_ok=False)
@@ -2906,14 +3084,32 @@ class WebReviewState:
                 for action in actions:
                     path = Path(str(action["path"]))
                     try:
-                        assert quarantine is not None
-                        destination = quarantine / f"{len(applied) + 1:05d}-{path.name}"
-                        shutil.move(str(path), str(destination))
+                        # Recheck at execution time, including the retained copies.
+                        if permanent:
+                            requester_groups = action_requesters[path_to_file_id[str(path)]]
+                            keeper_ids = set().union(*(complete_decisions[number].keepers for number in requester_groups))
+                            for keeper_id in keeper_ids:
+                                keeper = self.files[keeper_id]
+                                keeper_path = Path(str(keeper["path"]))
+                                keeper_stat = keeper_path.stat()
+                                if not keeper_path.is_file() or keeper_stat.st_size != int(keeper["size_bytes"]) or keeper_stat.st_mtime_ns != int(keeper["mtime_ns"]):
+                                    raise DedupError("retained copy changed; refusing permanent deletion")
+                        current_stat = path.stat()
+                        if current_stat.st_size != int(action["size_bytes"]) or current_stat.st_mtime_ns != int(action["mtime_ns"]):
+                            raise DedupError("file changed; refusing removal")
+                        self._apply_progress(message=f"{'Deleting' if permanent else 'Quarantining'} {path.name}")
+                        destination = None
+                        if permanent:
+                            path.unlink()
+                        else:
+                            assert quarantine is not None
+                            destination = quarantine / f"{len(applied) + 1:05d}-{path.name}"
+                            shutil.move(str(path), str(destination))
                         applied.append(
                             {
                                 "groupId": group_number,
                                 "source": str(path),
-                                "destination": str(destination),
+                                "destination": str(destination) if destination else None,
                                 "sizeBytes": int(action["size_bytes"]),
                             }
                         )
@@ -2921,17 +3117,28 @@ class WebReviewState:
                         if file_id is not None:
                             moved_file_ids.add(file_id)
                     except Exception as exc:
+                        if isinstance(exc, FileNotFoundError) and not path.exists():
+                            skipped.append(
+                                {"groupId": group_number, "path": str(path), "reason": "file no longer exists"}
+                            )
+                            missing_file_ids.add(path_to_file_id[str(path)])
+                            continue
                         failures.append(
                             {"groupId": group_number, "path": str(path), "error": str(exc)}
                         )
 
+                    finally:
+                        completed_count += 1
+                        self._apply_progress(completed=completed_count)
+
+            resolved_file_ids = moved_file_ids | missing_file_ids
             completed_groups = {
                 group_number
                 for group_number, file_ids in requested_by_group.items()
-                if file_ids <= moved_file_ids
+                if file_ids <= resolved_file_ids
             }
 
-            hidden_file_ids = set(moved_file_ids)
+            hidden_file_ids = set(resolved_file_ids)
             active_file_ids = {
                 file_id
                 for group_number, group in enumerate(self.groups, 1)
@@ -2965,7 +3172,7 @@ class WebReviewState:
             for new_group_number, group in enumerate(self.groups, 1):
                 group_ids = set(group)
                 for old_group_number, decision in remaining.items():
-                    old_remaining_ids = set(original_groups[old_group_number]) - moved_file_ids
+                    old_remaining_ids = set(original_groups[old_group_number]) - resolved_file_ids
                     if not group_ids.issubset(old_remaining_ids):
                         continue
                     keepers = decision.keepers & group_ids
@@ -2984,10 +3191,11 @@ class WebReviewState:
             result_path = self.plan_path.with_name(self.plan_path.stem + ".result.json")
             result = {
                 "applied_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-                "permanent": False,
+                "permanent": permanent,
                 "partial": True,
                 "quarantine": str(quarantine) if quarantine else None,
                 "applied": applied,
+                "skipped": skipped,
                 "failures": failures,
                 "completed_sets": sorted(completed_groups),
             }
@@ -3003,9 +3211,11 @@ class WebReviewState:
             "appliedSetCount": len(completed_groups),
             "failedSetCount": len(failed_groups),
             "appliedFileCount": len(applied),
+            "skippedFileCount": len(skipped),
             "failedFileCount": len(failures),
             "reclaimBytes": sum(int(item["sizeBytes"]) for item in applied),
             "failures": failures,
+            "skipped": skipped,
             "session": self.session_payload(),
         }
 
@@ -3235,6 +3445,14 @@ def make_web_review_handler(
                 self.end_headers()
             elif path_value == "/api/session":
                 self._send_json(state.session_payload())
+            elif path_value == "/api/plans":
+                try:
+                    query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                    self._send_json(run_store.list_plans(state.runs_root, int(query.get("page", ["1"])[0]), int(query.get("pageSize", ["25"])[0])))
+                except ValueError as exc:
+                    self._send_error_json(400, str(exc))
+            elif path_value == "/api/apply-status":
+                self._send_json(state.get_apply_status())
             elif path_value == "/api/rescan-status":
                 self._send_json(state.get_rescan_status())
             elif path_value.startswith("/api/video/"):
@@ -3268,9 +3486,19 @@ def make_web_review_handler(
                     )
                     self._send_json({"ok": True, "decisions": result})
                 elif path_value == "/api/plan":
-                    self._send_json(state.save_plan(payload.get("decisions")))
+                    self._send_json(state.save_plan(payload.get("decisions"), payload.get("name")))
+                elif path_value == "/api/plans/load":
+                    self._send_json(state.load_saved_plan(payload))
+                elif path_value == "/api/plans/rename":
+                    self._send_json(state.rename_saved_plan(payload))
                 elif path_value == "/api/apply-reviewed":
-                    self._send_json(state.apply_reviewed(payload.get("decisions")))
+                    if payload.get("permanent") is True:
+                        self._send_json(state.apply_reviewed(payload.get("decisions"), True, payload.get("confirmation", "")))
+                    else:
+                        self._send_json(state.apply_reviewed(payload.get("decisions")))
+                elif path_value == "/api/choose-scan-folder":
+                    folder = choose_destination_folder(Path(state.roots[0]) if state.roots else Path.home())
+                    self._send_json({"path": str(folder) if folder else None})
                 elif path_value == "/api/open-in-folder":
                     self._send_json(state.open_in_folder(payload.get("fileId")))
                 elif path_value == "/api/move-to-folder":
@@ -3283,6 +3511,10 @@ def make_web_review_handler(
                     self._send_error_json(404, "Not found.")
             except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
                 self._send_error_json(400, str(exc))
+            except (KeyError, TypeError) as exc:
+                self._send_error_json(400, "Saved plan data is incomplete or invalid.")
+            except FileNotFoundError:
+                self._send_error_json(404, "Saved plan was not found.")
             except DedupError as exc:
                 self._send_error_json(500, str(exc))
             except OSError as exc:
@@ -3293,11 +3525,11 @@ def make_web_review_handler(
 
 def web_review(args: argparse.Namespace) -> int:
     report_path, report = load_json(args.report)
+    run_directory = Path(report["run_directory"]) if report.get("run_directory") else None
+    if run_directory is not None and (run_directory / "report.json").is_file():
+        report_path, report = load_json(str(run_directory / "report.json"))
     files = {int(item["id"]): item for item in report.get("files") or []}
     matches = list(report.get("matches") or [])
-    if not matches:
-        print("No duplicate matches were found; web review was not started.")
-        return 0
     groups = connected_components(files, matches)
     report_settings = report.get("settings") or {}
     interval = float(report_settings.get("sample_interval_seconds") or 3.0)
@@ -3315,6 +3547,8 @@ def web_review(args: argparse.Namespace) -> int:
             "Lowering --min-duplicate-percent below the report's scan threshold requires a rescan."
         )
     plan_path = Path(args.plan).expanduser().resolve()
+    if run_directory is not None and args.plan == "video-dedup-plan.json":
+        plan_path = run_directory / "review-plan.json"
     bundle_path = Path(__file__).resolve().parent / "review-ui" / "bundle.html"
     if not bundle_path.is_file():
         raise DedupError(
@@ -3335,11 +3569,17 @@ def web_review(args: argparse.Namespace) -> int:
         hash_distance=int(report_settings.get("hash_distance") or 20),
         minimum_segment=float(report_settings.get("minimum_segment_seconds") or 9.0),
         scan_options=dict(report_settings),
+        run_directory=run_directory,
+        runs_root=run_directory.parent if run_directory else report_path.parent / "runs",
     )
     if plan_path.is_file():
-        state.decisions = load_review_decisions(
-            str(plan_path), report_path, state.groups, state.files
-        )
+        stored_plan = run_store.read_json(plan_path)
+        if stored_plan.get("review_context") and stored_plan.get("plan_id"):
+            state.load_saved_plan({"runId": stored_plan["run_id"], "id": stored_plan["plan_id"]})
+        else:
+            state.decisions = load_review_decisions(
+                str(plan_path), report_path, state.groups, state.files
+            )
     try:
         server = http.server.ThreadingHTTPServer(
             (args.host, args.port),
@@ -3545,6 +3785,7 @@ def apply_plan(args: argparse.Namespace) -> int:
         )
         quarantine.mkdir(parents=True, exist_ok=False)
     applied = []
+    skipped = []
     failures = []
     for index, action in enumerate(actions, 1):
         path = Path(action["path"])
@@ -3568,6 +3809,9 @@ def apply_plan(args: argparse.Namespace) -> int:
                 }
             )
         except Exception as exc:
+            if isinstance(exc, FileNotFoundError) and not path.exists():
+                skipped.append({"path": str(path), "reason": "file no longer exists"})
+                continue
             failures.append({"path": str(path), "error": str(exc)})
     result_path = plan_path.with_name(plan_path.stem + ".result.json")
     result = {
@@ -3575,6 +3819,7 @@ def apply_plan(args: argparse.Namespace) -> int:
         "permanent": args.permanent,
         "quarantine": str(quarantine) if quarantine else None,
         "applied": applied,
+        "skipped": skipped,
         "failures": failures,
     }
     result_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
@@ -3583,6 +3828,7 @@ def apply_plan(args: argparse.Namespace) -> int:
             {
                 "ok": not failures,
                 "applied": len(applied),
+                "skipped": len(skipped),
                 "failed": len(failures),
                 "quarantine": str(quarantine) if quarantine else None,
                 "result": str(result_path),
@@ -3647,6 +3893,7 @@ def build_parser() -> argparse.ArgumentParser:
     scan_parser.add_argument(
         "--report", default="video-dedup-report.json", help="Output JSON report path."
     )
+    scan_parser.add_argument("--runs-dir", help="Scan history folder (default: runs beside the report).")
     scan_parser.add_argument(
         "--cache",
         default=".video-dedup-cache.sqlite3",

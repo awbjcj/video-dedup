@@ -109,7 +109,9 @@ listed in the report. **Save plan** writes decisions without changing videos.
 **Apply reviewed** moves coverage-safe removals from reviewed sets into a
 timestamped quarantine beside the plan. Successfully applied sets are removed
 from the active plan and review queue; refused sets remain available to retry.
-Permanent deletion remains CLI-only. Press `Ctrl+C` in the terminal to stop it.
+Files that no longer exist are recorded as skipped, and apply continues with
+the remaining files. This also applies to CLI plans.
+Press `Ctrl+C` in the terminal to stop it.
 If port 8765 is occupied, let the operating system choose a free port:
 
 ```powershell
@@ -283,3 +285,55 @@ pnpm lint
 
 Run `pnpm test:browser -- http://127.0.0.1:8765/ .\.tmp-browser-output` while a
 `web-review` server is running to exercise the rendered bulk-review workflow.
+
+### Browser scan and removal controls
+
+In **Settings**, use **Browse for folder…** to add folders from the server computer, or enter one full folder path per line. **Rescan with all settings** scans these folders even when detection settings have not changed. Save or undo pending review edits first. Scan progress remains visible above the review workspace and reconnects after a page reload; counts refer to the current stage, not an estimated overall percentage.
+
+**Apply reviewed** defaults to quarantine. Choose **Permanently delete** and type `DELETE` to bypass quarantine and the Recycle Bin. Both modes use coverage and file-change checks. The dialog and workspace show file progress and the final counts of completed, refused, and missing files. Quarantine on the same drive does not free disk space. Scans and file operations cannot run concurrently.
+
+## Scan history and named review plans
+
+Every scan now creates a separate folder under `runs/` beside the requested report.
+Use `scan --runs-dir PATH` to choose a different history folder. Browser rescans
+reuse the same history folder and create a new run rather than replacing the
+previous run. The `--report` path remains a compatibility export of the latest scan.
+
+```text
+runs/
+  20261002T063000.123456Z-a1b2c3d4/
+    run.json          # schema/tool versions, UTC times, status, folders, options, summary/error
+    scan-report.json  # original completed scan; retained as history
+    report.json       # working report used by review/file operations
+    review-plan.json  # current working plan when reviewing this run
+    plans/
+      <timestamp-id>.json  # named decision snapshot with its report data and review settings
+```
+
+Failed or interrupted scans retain a manifest with their error and finish time;
+the last successful compatibility export is retained. A forcibly terminated
+process may leave its manifest marked `running`. Fingerprint caches remain shared
+at the configured cache path. Run history is local and ignored by Git.
+
+In the browser, **Save plan** accepts a name and creates a new snapshot on every
+save. **Saved plans** lists snapshots across runs with their time, source folders,
+and reviewed-set count. Use **Rename** to change a display name (1–120 characters)
+or **Load** to restore the saved decisions, report data, and filters together.
+Save unsaved decisions before loading another plan. Loading and renaming never
+apply removal actions. Older reports are copied into run history on their first
+browser save; existing `--plan` files still load on startup.
+
+The additive local API uses the existing review request header and error format:
+
+| Endpoint | Request | Response |
+| --- | --- | --- |
+| `GET /api/plans?page=1&pageSize=25` | Page size 1–100 | `items`, `page`, `pageSize`, `total` |
+| `POST /api/plan` | `decisions`, optional `name` | Existing save result; also writes a named snapshot |
+| `POST /api/plans/load` | `runId`, `id` | Restored session |
+| `POST /api/plans/rename` | `runId`, `id`, `name` | `{"ok": true}` |
+
+Catalog entries contain `id`, `runId`, `name`, `createdAt`, `updatedAt`,
+`decisionCount`, and `roots`. IDs are stable across renames. Loading uses the
+snapshot's exact group IDs and settings; saved removal actions are recalculated
+and file checks still apply before any removal. Invalid requests return 400,
+missing plans return 404, and storage failures return 500 with `{"error": "..."}`.

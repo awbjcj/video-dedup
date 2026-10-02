@@ -658,6 +658,50 @@ class FingerprintTests(unittest.TestCase):
             self.assertEqual(apply_result["completed_sets"], [1])
             self.assertEqual(apply_result["failures"][0]["groupId"], 2)
 
+    def test_web_review_skips_missing_files_and_continues(self) -> None:
+        for disappears_during_move in (False, True):
+            with self.subTest(during_move=disappears_during_move), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                report_path, paths = self.write_three_group_report(root)
+                _, report = vd.load_json(str(report_path))
+                for index, item in enumerate(report["files"]):
+                    paths[index].write_bytes(f"video-{index}".encode())
+                    stat = paths[index].stat()
+                    item.update(size_bytes=stat.st_size, mtime_ns=stat.st_mtime_ns)
+                files = {int(item["id"]): item for item in report["files"]}
+                # Put both removals in one set so a missing file cannot block its peers.
+                report["matches"].append({"a_id": 1, "b_id": 2, "kind": "exact"})
+                state = vd.WebReviewState(
+                    report_path, root / "plan.json", files, report["matches"],
+                    [[0, 1, 2, 3]], 1.0, [str(root)], 95.0,
+                )
+                real_move = shutil.move
+
+                def move(source, destination):
+                    if source == str(paths[0]):
+                        paths[0].unlink()
+                    return real_move(source, destination)
+
+                if not disappears_during_move:
+                    paths[0].unlink()
+                with mock.patch.object(vd.shutil, "move", side_effect=move if disappears_during_move else real_move):
+                    result = state.apply_reviewed([
+                        {"groupId": 1, "keeperIds": [1, 3], "method": "web-manual"},
+                    ])
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["appliedSetCount"], 1)
+                self.assertEqual(result["failedSetCount"], 0)
+                self.assertEqual(result["appliedFileCount"], 1)
+                self.assertEqual(result["skippedFileCount"], 1)
+                self.assertFalse(paths[2].exists())
+                self.assertTrue(paths[1].exists())
+                self.assertTrue(paths[3].exists())
+                plan = json.loads((root / "plan.json").read_text(encoding="utf-8"))
+                self.assertEqual(plan["actions"], [])
+                saved = json.loads(Path(result["resultPath"]).read_text(encoding="utf-8"))
+                self.assertEqual(saved["skipped"][0]["path"], str(paths[0]))
+                self.assertEqual(saved["failures"], [])
+
     def test_web_review_applies_one_combined_removal_from_overlapping_clip_sets(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -1146,6 +1190,26 @@ class FingerprintTests(unittest.TestCase):
         self.assertEqual(groups, [])
         self.assertEqual(len(failures), 2)
         self.assertTrue(all(item["error"].startswith("exact hashing:") for item in failures))
+
+    def test_apply_skips_missing_files_and_continues(self) -> None:
+        for permanent in (False, True):
+            with self.subTest(permanent=permanent), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                source = root / "duplicate.mp4"
+                source.write_bytes(b"video")
+                stat = source.stat()
+                plan = root / "plan.json"
+                plan.write_text(json.dumps({"actions": [
+                    {"path": str(path), "size_bytes": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+                    for path in (root / "missing.mp4", source)
+                ]}), encoding="utf-8")
+                arguments = ["--permanent", "--yes"] if permanent else ["--quarantine", str(root / "quarantine")]
+                self.assertEqual(vd.main(["apply", str(plan), *arguments]), 0)
+                self.assertFalse(source.exists())
+                result = json.loads((root / "plan.result.json").read_text(encoding="utf-8"))
+                self.assertEqual(len(result["applied"]), 1)
+                self.assertEqual(len(result["skipped"]), 1)
+                self.assertEqual(result["failures"], [])
 
     def test_apply_moves_to_quarantine_and_records_result(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
