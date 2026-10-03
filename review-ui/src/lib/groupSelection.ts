@@ -35,16 +35,18 @@ export function linkedGroupIds(
   return linked
 }
 
-export function updateLinkedGroupSelection(
+export function updateGroupSelection(
   groups: DuplicateGroup[],
   current: ReadonlySet<number>,
   seedGroupIds: Iterable<number>,
   selected: boolean,
 ): Set<number> {
   const next = new Set(current)
-  linkedGroupIds(groups, seedGroupIds).forEach((groupId) => {
+  const knownGroupIds = new Set(groups.map((group) => group.id))
+  for (const groupId of seedGroupIds) {
+    if (!knownGroupIds.has(groupId)) continue
     if (selected) next.add(groupId)
     else next.delete(groupId)
-  })
+  }
   return next
 }

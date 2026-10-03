@@ -48,7 +48,7 @@ export function ApplyReviewedDialog({
           </div>
           <DialogTitle>Apply reviewed removals?</DialogTitle>
           <DialogDescription>
-            This applies only reviewed sets that contain a coverage-safe removal. Unreviewed sets stay untouched.
+            This applies coverage-safe removals selected in reviewed sets. Keep and quarantine choices stay in sync across sets. Removed files disappear from every set that shares them.
           </DialogDescription>
         </DialogHeader>
 

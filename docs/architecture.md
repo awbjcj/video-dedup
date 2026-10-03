@@ -108,7 +108,17 @@ and media routes needed by the current session. The server saves plans and can
 apply the reviewed portion of a plan to a recoverable quarantine. It repeats
 the size and modification-time checks, records a result, removes successfully
 completed sets from the active plan, and leaves refused sets available to retry.
-Permanent deletion remains CLI-only.
+Unreviewed sets retain files by default, but do not veto a coverage-safe removal
+selected in a reviewed set. The browser synchronizes each file's keep/removal
+selection across reviewed sets and derives unreviewed cards from those shared
+choices without marking the sets reviewed. Undo restores the entire selection
+change. Legacy conflicting plans retain explicit keep precedence until edited.
+Sets with no local keeper can be saved, but actions require retained coverage
+sources elsewhere; even a zero coverage threshold cannot remove the last copies.
+Removed files and their matches are cleared globally from the
+active queue and persisted working report, while the original scan history is
+preserved. The browser also supports permanent deletion with DELETE confirmation
+and checks the retained files that supply each removal's coverage.
 
 Some containers or codecs are not browser-native. For those, the local server
 uses FFmpeg to stream a fragmented MP4 preview as it is requested. This makes

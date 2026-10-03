@@ -109,6 +109,15 @@ listed in the report. **Save plan** writes decisions without changing videos.
 **Apply reviewed** moves coverage-safe removals from reviewed sets into a
 timestamped quarantine beside the plan. Successfully applied sets are removed
 from the active plan and review queue; refused sets remain available to retry.
+An unreviewed set does not block removal of a shared file selected in a reviewed
+set. Coverage-safe removals disappear from every set that contains them, and the
+updated working report keeps them out of the queue after a server restart.
+Keep and quarantine selections for a shared file update immediately in every set.
+The latest edit updates previously reviewed choices too; unreviewed sets remain
+unreviewed. Undo restores the previous shared selections. Counts and estimated
+space include each file once. Removal still requires coverage by retained files.
+Bulk actions review only the sets you explicitly select. Updating shared files
+does not select linked sets or mark those sets reviewed.
 Files that no longer exist are recorded as skipped, and apply continues with
 the remaining files. This also applies to CLI plans.
 Press `Ctrl+C` in the terminal to stop it.

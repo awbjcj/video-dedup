@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { linkedGroupIds, updateLinkedGroupSelection } from './groupSelection.ts'
+import { linkedGroupIds, updateGroupSelection } from './groupSelection.ts'
 import type { DuplicateGroup } from '../types.ts'
 
 function group(id: number, fileIds: number[]): DuplicateGroup {
@@ -25,10 +25,15 @@ test('linkedGroupIds follows shared videos transitively', () => {
   assert.deepEqual([...linkedGroupIds(groups, [4])], [4])
 })
 
-test('updateLinkedGroupSelection marks and clears a linked set cluster together', () => {
-  const selected = updateLinkedGroupSelection(groups, new Set([4]), [1], true)
-  assert.deepEqual([...selected].sort(), [1, 2, 3, 4])
+test('bulk selection includes only explicitly selected sets despite shared videos', () => {
+  const selected = updateGroupSelection(groups, new Set([4]), [1], true)
+  assert.deepEqual([...selected].sort(), [1, 4])
 
-  const cleared = updateLinkedGroupSelection(groups, selected, [2], false)
-  assert.deepEqual([...cleared], [4])
+  const cleared = updateGroupSelection(groups, selected, [2], false)
+  assert.deepEqual([...cleared].sort(), [1, 4])
+  assert.deepEqual([...updateGroupSelection(groups, cleared, [1], false)], [4])
+})
+
+test('select visible does not pull in linked sets outside the explicit list', () => {
+  assert.deepEqual([...updateGroupSelection(groups, new Set(), [1, 3], true)], [1, 3])
 })

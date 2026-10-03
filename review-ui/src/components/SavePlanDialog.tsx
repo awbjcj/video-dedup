@@ -67,7 +67,7 @@ export function SavePlanDialog({
         {unresolved > 0 && (
           <div className="flex gap-3 border-l-4 border-amber-400 bg-amber-50 p-4 text-base text-amber-950">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-            <p><strong>{unresolved} unreviewed sets will keep every file.</strong> You can reopen this plan later and continue reviewing.</p>
+            <p><strong>{unresolved} sets still need review.</strong> Shared files keep the selections made in other sets. You can reopen this plan later and continue reviewing.</p>
           </div>
         )}
 

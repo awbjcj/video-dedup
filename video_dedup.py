@@ -1888,7 +1888,7 @@ def load_review_decisions(
             ]
         except KeyError:
             continue
-        if not keepers or not keepers.issubset(set(group)):
+        if not keepers.issubset(set(group)):
             continue
         if set(removal_order) != set(group) - keepers:
             removal_order = [file_id for file_id in group if file_id not in keepers]
@@ -2159,7 +2159,7 @@ def build_review_actions(
         coverage, sources = covered_by(
             file_id, keeper_ids, matches, files, interval
         )
-        if coverage + 1e-9 < minimum_coverage:
+        if not sources or coverage + 1e-9 < minimum_coverage:
             if verbose:
                 print(
                     f"  Retaining {files[file_id]['path']} (only {coverage:.1f}% covered by selected keepers)."
@@ -2820,9 +2820,11 @@ class WebReviewState:
                     f"keeperIds for set {group_number} must contain integers."
                 ) from exc
             group = self.groups[group_number - 1]
-            if not keepers or not keepers.issubset(set(group)):
+            # Shared file choices can leave a clip set with no local keeper.
+            # Removal still requires coverage by retained files globally.
+            if not keepers.issubset(set(group)):
                 raise ValueError(
-                    f"Set {group_number} must keep at least one file from that set."
+                    f"Keepers for set {group_number} must belong to that set."
                 )
             method = str(raw_decision.get("method") or "web-manual")[:80]
             submitted[group_number] = ReviewDecision(
@@ -2838,10 +2840,18 @@ class WebReviewState:
     ) -> tuple[dict, list[dict], int]:
         unresolved_count = len(self.groups) - len(submitted)
         complete_decisions = dict(submitted)
+        requested_removals = {
+            file_id
+            for decision in submitted.values()
+            for file_id in decision.removal_order
+        }
         for group_number, group in enumerate(self.groups, 1):
             if group_number not in complete_decisions:
                 complete_decisions[group_number] = ReviewDecision(
-                    set(group),
+                    # Unreviewed files stay retained unless a reviewed set
+                    # requests their removal. Explicit keepers still take
+                    # precedence globally in build_review_actions.
+                    set(group) - requested_removals,
                     [],
                     "web-unresolved-kept",
                 )
@@ -2986,21 +2996,7 @@ class WebReviewState:
             group_number: self.groups[group_number - 1]
             for group_number in submitted
         }
-        complete_decisions = dict(submitted)
-        for group_number, group in enumerate(self.groups, 1):
-            if group_number not in complete_decisions:
-                complete_decisions[group_number] = ReviewDecision(
-                    set(group), [], "web-unresolved-kept"
-                )
-        actions = build_review_actions(
-            self.groups,
-            complete_decisions,
-            self.files,
-            self.matches,
-            self.interval,
-            self.minimum_coverage,
-            verbose=False,
-        )
+        _, actions, _ = self._web_plan_payload(submitted)
         path_to_file_id = {
             str(item["path"]): file_id for file_id, item in self.files.items()
         }
@@ -3086,9 +3082,10 @@ class WebReviewState:
                     try:
                         # Recheck at execution time, including the retained copies.
                         if permanent:
-                            requester_groups = action_requesters[path_to_file_id[str(path)]]
-                            keeper_ids = set().union(*(complete_decisions[number].keepers for number in requester_groups))
-                            for keeper_id in keeper_ids:
+                            # Coverage can include a retained file in an
+                            # unreviewed set, so check the actual covering files.
+                            for keeper_path_value in action["kept_source_paths"]:
+                                keeper_id = path_to_file_id[str(keeper_path_value)]
                                 keeper = self.files[keeper_id]
                                 keeper_path = Path(str(keeper["path"]))
                                 keeper_stat = keeper_path.stat()
@@ -3176,8 +3173,6 @@ class WebReviewState:
                     if not group_ids.issubset(old_remaining_ids):
                         continue
                     keepers = decision.keepers & group_ids
-                    if not keepers:
-                        break
                     self.decisions[new_group_number] = ReviewDecision(
                         keepers,
                         [file_id for file_id in decision.removal_order if file_id in group_ids],
@@ -3187,6 +3182,20 @@ class WebReviewState:
 
             remaining_plan, _, _ = self._web_plan_payload(self.decisions)
             self._write_plan(remaining_plan)
+            if hidden_file_ids:
+                # Persist the global queue cleanup so a restart cannot bring
+                # quarantined/deleted files back in unreviewed sets. Preserve
+                # the immutable scan-report.json kept in run history.
+                working_report = run_store.read_json(self.report_path)
+                working_report.update(
+                    files=list(self.source_files.values()),
+                    matches=self.source_matches,
+                )
+                run_store.write_json(self.report_path, working_report)
+                if self.run_directory is not None:
+                    run_report_path = self.run_directory / "report.json"
+                    if run_report_path != self.report_path:
+                        run_store.write_json(run_report_path, working_report)
 
             result_path = self.plan_path.with_name(self.plan_path.stem + ".result.json")
             result = {

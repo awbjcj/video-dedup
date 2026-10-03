@@ -48,7 +48,7 @@ export function BulkToolbar({
         </span>
         <div>
           <p className="text-base font-semibold text-slate-900">sets selected</p>
-          <p className="text-sm text-slate-600">Apply one decision rule to the whole selection.</p>
+          <p className="text-sm text-slate-600">Review only selected sets. Shared file updates leave other sets' review status unchanged.</p>
         </div>
       </div>
 

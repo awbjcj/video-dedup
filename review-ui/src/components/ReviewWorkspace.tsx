@@ -33,6 +33,7 @@ type SortKey = 'name' | 'size' | 'resolution' | 'coverage' | 'path'
 type ReviewWorkspaceProps = {
   group: DuplicateGroup
   decision?: Decision
+  removalIds: ReadonlySet<number>
   busy: boolean
   previousGroupId?: number
   nextGroupId?: number
@@ -57,6 +58,7 @@ function sortFiles(files: VideoFile[], sort: SortKey): VideoFile[] {
 export function ReviewWorkspace({
   group,
   decision,
+  removalIds,
   busy,
   previousGroupId,
   nextGroupId,
@@ -73,8 +75,8 @@ export function ReviewWorkspace({
   const [strategy, setStrategy] = useState<Strategy>('delete-fully-covered')
 
   const keeperIds = useMemo(
-    () => new Set(decision?.keeperIds ?? group.files.map((file) => file.id)),
-    [decision, group.files],
+    () => new Set(group.files.filter((file) => !removalIds.has(file.id)).map((file) => file.id)),
+    [removalIds, group.files],
   )
   const visibleFiles = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -161,8 +163,8 @@ export function ReviewWorkspace({
         {!decision && (
           <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50/80 px-4 py-3.5 text-base shadow-sm">
             <div>
-              <p className="font-semibold text-amber-950">Safe default: keep everything</p>
-              <p className="text-amber-800">This set stays untouched until you record a decision.</p>
+              <p className="font-semibold text-amber-950">This set needs review</p>
+              <p className="text-amber-800">Keep and quarantine choices for shared files stay in sync across sets.</p>
             </div>
             <Button
               type="button"

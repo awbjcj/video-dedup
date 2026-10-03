@@ -25,9 +25,10 @@ import {
   updateSettings,
 } from '@/lib/api'
 import { formatBytes } from '@/lib/format'
-import { updateLinkedGroupSelection } from '@/lib/groupSelection'
+import { updateGroupSelection } from '@/lib/groupSelection'
 import { filterReviewGroups } from '@/lib/reviewGroups'
-import type { Decision, DetectionSettings, FilterStatus, RescanStatus, SessionPayload, Strategy, VideoFile } from '@/types'
+import { removalFiles, updateDecisions } from '@/lib/reviewDecisions'
+import type { Decision, DetectionSettings, DuplicateGroup, FilterStatus, RescanStatus, SessionPayload, Strategy, VideoFile } from '@/types'
 
 type ReviewState = {
   decisions: Map<number, Decision>
@@ -37,7 +38,7 @@ type ReviewState = {
 
 type ReviewAction =
   | { type: 'hydrate'; decisions: Decision[] }
-  | { type: 'set-many'; decisions: Decision[] }
+  | { type: 'set-many'; decisions: Decision[]; groups: DuplicateGroup[] }
   | { type: 'clear-many'; groupIds: number[] }
   | { type: 'undo' }
   | { type: 'saved' }
@@ -51,8 +52,7 @@ function reviewReducer(state: ReviewState, action: ReviewAction): ReviewState {
     }
   }
   if (action.type === 'set-many') {
-    const next = new Map(state.decisions)
-    action.decisions.forEach((decision) => next.set(decision.groupId, decision))
+    const next = updateDecisions(action.groups, state.decisions, action.decisions)
     return { decisions: next, history: [...state.history.slice(-29), state.decisions], dirty: true }
   }
   if (action.type === 'clear-many') {
@@ -202,21 +202,12 @@ function App() {
     }
   }
 
-  const selectedRemovalCount = useMemo(() => {
-    if (!session) return 0
-    return [...review.decisions.values()].reduce((total, decision) => {
-      const group = session.groups.find((item) => item.id === decision.groupId)
-      return total + Math.max(0, (group?.fileCount ?? 0) - decision.keeperIds.length)
-    }, 0)
-  }, [review.decisions, session])
-  const estimatedReclaim = useMemo(() => {
-    if (!session) return 0
-    return [...review.decisions.values()].reduce((total, decision) => {
-      const keepers = new Set(decision.keeperIds)
-      const group = session.groups.find((item) => item.id === decision.groupId)
-      return total + (group?.files.reduce((sum, file) => sum + (keepers.has(file.id) ? 0 : file.sizeBytes), 0) ?? 0)
-    }, 0)
-  }, [review.decisions, session])
+  const selectedRemovalFiles = useMemo(
+    () => removalFiles(session?.groups ?? [], review.decisions),
+    [review.decisions, session],
+  )
+  const selectedRemovalCount = selectedRemovalFiles.size
+  const estimatedReclaim = [...selectedRemovalFiles.values()].reduce((sum, file) => sum + file.sizeBytes, 0)
   const actionableReviewedSetCount = useMemo(() => {
     if (!session) return 0
     return [...review.decisions.values()].filter((decision) => {
@@ -230,7 +221,7 @@ function App() {
     setRecommending(true)
     try {
       const recommendations = await fetchRecommendations(groupIds, strategy)
-      dispatch({ type: 'set-many', decisions: recommendations })
+      dispatch({ type: 'set-many', decisions: recommendations, groups: session?.groups ?? [] })
       toast.success(`Updated ${recommendations.length} set${recommendations.length === 1 ? '' : 's'}`, {
         description: 'Review the selected keepers before saving the plan.',
       })
@@ -252,7 +243,7 @@ function App() {
         keeperIds: group.files.map((file) => file.id),
         method: 'web-keep-all',
       }))
-    dispatch({ type: 'set-many', decisions })
+    dispatch({ type: 'set-many', decisions, groups: session.groups })
     toast.success(`Marked ${decisions.length} sets as reviewed — keep all`)
   }
 
@@ -441,7 +432,7 @@ function App() {
           onActivate={setActiveGroupId}
           onToggleSelected={(groupId) =>
             setSelectedGroupIds((current) =>
-              updateLinkedGroupSelection(
+              updateGroupSelection(
                 session.groups,
                 current,
                 [groupId],
@@ -451,7 +442,7 @@ function App() {
           }
           onSelectVisible={(groupIds, selected) =>
             setSelectedGroupIds((current) =>
-              updateLinkedGroupSelection(session.groups, current, groupIds, selected),
+              updateGroupSelection(session.groups, current, groupIds, selected),
             )
           }
         />
@@ -470,10 +461,11 @@ function App() {
             key={activeGroup.id}
             group={activeGroup}
             decision={review.decisions.get(activeGroup.id)}
+            removalIds={new Set(selectedRemovalFiles.keys())}
             busy={recommending || operationBusy}
             previousGroupId={previousGroupId}
             nextGroupId={nextGroupId}
-            onDecision={(decision) => dispatch({ type: 'set-many', decisions: [decision] })}
+            onDecision={(decision) => dispatch({ type: 'set-many', decisions: [decision], groups: session.groups })}
             onClearDecision={(groupId) => dispatch({ type: 'clear-many', groupIds: [groupId] })}
             onRecommend={(groupId, strategy) => void applyRecommendation([groupId], strategy)}
             onNavigate={setActiveGroupId}
