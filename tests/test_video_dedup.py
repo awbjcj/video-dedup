@@ -303,6 +303,79 @@ class FingerprintTests(unittest.TestCase):
 
         self.assertEqual(removals, [0])
 
+    def test_covering_strategy_prefers_compilation_over_higher_quality_parts(self) -> None:
+        files = {
+            0: {"path": "compilation.mp4", "duration_seconds": 200, "size_bytes": 1,
+                "width": 640, "height": 360},
+            1: {"path": "part-a.mp4", "duration_seconds": 100, "size_bytes": 10,
+                "width": 1920, "height": 1080},
+            2: {"path": "part-b.mp4", "duration_seconds": 100, "size_bytes": 10,
+                "width": 1920, "height": 1080},
+        }
+        # The parts also cover the entire compilation. Quality alone would
+        # discard it first and leave both individual parts behind.
+        for coverage, threshold, expected in [(100, 95, {1, 2}), (95, 95, {1, 2}),
+                                                (94, 95, set()), (94, 90, {1, 2})]:
+            for reverse in (False, True):
+                matches = []
+                for part, start in ((1, 0), (2, 100)):
+                    match = {
+                        "a_id": 0, "b_id": part, "kind": "perceptual",
+                        "a_sample_ranges": [[start, start + 99]],
+                        "b_sample_ranges": [[0, coverage - 1]],
+                    }
+                    if reverse:
+                        match["a_id"], match["b_id"] = match["b_id"], match["a_id"]
+                        match["a_sample_ranges"], match["b_sample_ranges"] = (
+                            match["b_sample_ranges"], match["a_sample_ranges"]
+                        )
+                    matches.append(match)
+                with self.subTest(coverage=coverage, threshold=threshold, reverse=reverse):
+                    removals = vd.automatic_removal_order(
+                        [2, 0, 1], "delete-fully-covered", matches, files, 1.0, threshold, []
+                    )
+                    if coverage < threshold:
+                        # Partial overlap must never mark the parts for removal.
+                        self.assertTrue(set(removals).isdisjoint({1, 2}))
+                    else:
+                        self.assertEqual(set(removals), expected)
+                        for removed in removals:
+                            self.assertGreaterEqual(
+                                vd.covered_by(removed, {0}, matches, files, 1.0)[0], threshold
+                            )
+
+    def test_covering_strategy_prefers_outer_compilation_in_nested_containment(self) -> None:
+        files = {
+            i: {"path": f"{i}.mp4", "duration_seconds": duration, "size_bytes": i + 1}
+            for i, duration in enumerate((40, 20, 10, 10))
+        }
+        matches = [
+            {"a_id": 0, "b_id": 1, "kind": "perceptual",
+             "a_sample_ranges": [[0, 19]], "b_sample_ranges": [[0, 19]]},
+            {"a_id": 0, "b_id": 2, "kind": "perceptual",
+             "a_sample_ranges": [[20, 29]], "b_sample_ranges": [[0, 9]]},
+            {"a_id": 0, "b_id": 3, "kind": "perceptual",
+             "a_sample_ranges": [[30, 39]], "b_sample_ranges": [[0, 9]]},
+            {"a_id": 1, "b_id": 2, "kind": "perceptual",
+             "a_sample_ranges": [[0, 9]], "b_sample_ranges": [[0, 9]]},
+            {"a_id": 1, "b_id": 3, "kind": "perceptual",
+             "a_sample_ranges": [[10, 19]], "b_sample_ranges": [[0, 9]]},
+        ]
+        removals = vd.automatic_removal_order(
+            [0, 1, 2, 3], "delete-fully-covered", matches, files, 1.0, 95.0, []
+        )
+        self.assertEqual(set(removals), {1, 2, 3})
+
+    def test_covering_strategy_uses_quality_for_equivalent_copies(self) -> None:
+        files = {
+            i: {"path": f"{i}.mp4", "duration_seconds": 20, "size_bytes": i + 1}
+            for i in range(3)
+        }
+        matches = [{"a_id": 0, "b_id": i, "kind": "exact"} for i in (1, 2)]
+        self.assertEqual(vd.automatic_removal_order(
+            [0, 1, 2], "delete-fully-covered", matches, files, 1.0, 95.0, []
+        ), [0, 1])
+
     def test_automatic_strategy_never_removes_the_last_copy(self) -> None:
         files = {
             index: {"path": f"C:/videos/{index}.mp4", "duration_seconds": 5, "size_bytes": 1}

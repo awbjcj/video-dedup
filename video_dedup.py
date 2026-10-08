@@ -1702,6 +1702,22 @@ def automatic_removal_order(
         )[0]
         for file_id in group
     }
+    contained_counts: dict[int, int] = defaultdict(int)
+    if strategy == "delete-fully-covered":
+        pair_matches: dict[tuple[int, int], list[dict]] = defaultdict(list)
+        for match in matches:
+            left, right = sorted((int(match["a_id"]), int(match["b_id"])))
+            if left != right and {left, right}.issubset(initial_keepers):
+                pair_matches[(left, right)].append(match)
+        for (left, right), relations in pair_matches.items():
+            left_covered = covered_by(left, {right}, relations, files, interval)[0]
+            right_covered = covered_by(right, {left}, relations, files, interval)[0]
+            # Only asymmetric containment earns a preference. Equivalent copies
+            # still use quality tie-breaks rather than counting each other.
+            if left_covered + 1e-9 >= minimum_coverage > right_covered + 1e-9:
+                contained_counts[right] += 1
+            elif right_covered + 1e-9 >= minimum_coverage > left_covered + 1e-9:
+                contained_counts[left] += 1
 
     def priority(file_id: int) -> tuple:
         item = files[file_id]
@@ -1716,7 +1732,9 @@ def automatic_removal_order(
                 0 if mixed_alphanumeric_filename(str(item["path"])) else 1,
                 *quality,
             )
-        return (-coverage_by_file[file_id], *quality)
+        # Try contained clips before compilations, even when the clips together
+        # cover the compilation and it has lower resolution or a smaller file.
+        return (contained_counts[file_id], -coverage_by_file[file_id], *quality)
 
     keepers = set(group)
     removals = []

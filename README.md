@@ -182,8 +182,13 @@ Available strategies are:
 - `delete-shorter-name`: remove shorter filenames first.
 - `delete-numbered-name`: remove filenames containing both letters and digits
   first, such as `clip2.mp4`.
-- `delete-fully-covered`: remove the most completely covered files first, while
-  recalculating coverage after each choice.
+- `delete-fully-covered` ("Prefer covering videos" in the browser): prefer keeping
+  compilations that contain other clips. Videos containing more clips are tried
+  for removal later, even if the individual clips together cover the compilation
+  or have higher resolution. Containment requires the configured minimum coverage
+  of the clip, without the clip also covering that much of the containing video.
+  Otherwise, remove the most completely covered files first, recalculating
+  coverage after each choice.
 
 Automatic strategies only add an action when the remaining keepers cover at
 least `--minimum-delete-coverage` percent of that file (95% by default). They
