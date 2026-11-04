@@ -2,7 +2,7 @@
 repo_url: https://github.com/awbjcj/video-dedup
 repo_name: video-dedup
 role: sole author
-generated_at: 2026-11-02
+generated_at: 2026-11-04
 ---
 
 # Project: Video Dedup
@@ -11,11 +11,12 @@ A local tool for finding and reviewing duplicate or overlapping videos.
 
 ## Summary
 
-Video Dedup scans video libraries for byte-identical files and visually similar footage, including clips contained in longer videos (`video_dedup.py`, `tests/test_video_dedup.py`). It combines a bounded candidate search with timeline matching and presents the results for terminal or browser review (`video_dedup.py`, `review-ui/src/App.tsx`). Users can save review plans and apply selected removals to a quarantine (`video_dedup.py`, `run_store.py`). The project is active and has one recorded Git author.
+Video Dedup helps people find and review byte-identical videos and visually similar footage, including clips contained in longer videos (`video_dedup.py:_scan`, `tests/test_video_dedup.py:FingerprintTests.test_directional_coverage_for_contained_clip`). It uses a bounded candidate search and timeline matching, then presents results for terminal or browser review (`video_dedup.py:build_candidates`, `video_dedup.py:detailed_match`, `review-ui/src/App.tsx:reviewReducer`). Reviewers can save plans and apply selected removals to quarantine (`run_store.py:write_json`, `video_dedup.py:WebReviewState._apply_reviewed`). The project is active; its recorded implementation history has one author.
 
-Role: sole author (18 of 18 commits through `0c41c93`; `git shortlog -sne 0c41c93`, `git rev-list --count 0c41c93`; implementation history: `git log -- video_dedup.py run_store.py review-ui/src tests`)
+Role: sole author (19 of 19 recorded commits through `2b715dc`; `git shortlog -sne 2b715dc`, `git rev-list --count 2b715dc`; implementation history: `git log -- video_dedup.py run_store.py review-ui/src tests`)
 Repository: https://github.com/awbjcj/video-dedup
 Timeline: 2026-08 – present (`git log --reverse --format=%as`, `git log -1 --format=%as`)
+Project context: unknown
 
 ## Tech stack (evidence-backed)
 
@@ -36,23 +37,29 @@ Timeline: 2026-08 – present (`git log --reverse --format=%as`, `git log -1 --f
 - Node.js — frontend unit-test runner (`review-ui/package.json`, `review-ui/src/lib/reviewDecisions.test.ts`).
 - Vite — frontend development and build configuration (`review-ui/package.json`, `review-ui/vite.config.ts`).
 - Parcel — generation of the self-contained browser bundle (`review-ui/package.json`, `review-ui/.parcelrc`).
+- cProfile — local call-path profiling documented in `docs/performance-research.md:80-86` (commit `fec73ed`).
 
 ## Architecture highlights
 
-- Built a staged scanner that combines SHA-256 checks, a bounded keyframe-token index, and fixed-interval verification (`video_dedup.py`).
-- Implemented whole-frame and regional perceptual hashes to match watermarked footage in test cases while rejecting low-information regions (`video_dedup.py`, `tests/test_watermarks.py`).
-- Calculated directional timeline coverage for clips and compilations and used retained coverage to filter proposed removals (`video_dedup.py`, `tests/test_video_dedup.py`).
-- Reused fingerprints, file hashes, and decode failures in a SQLite cache keyed by file metadata; corrupt fingerprint entries are discarded for recomputation (`video_dedup.py`, `tests/test_video_dedup.py`).
-- Separated review plans from file operations; the command-line apply step checks file size and modification time, defaults to quarantine, and requires confirmation for permanent deletion unless explicitly bypassed (`video_dedup.py`).
-- Synchronized decisions for files shared by overlapping review sets and excluded explicitly kept files from the removal list (`review-ui/src/lib/reviewDecisions.ts`, `review-ui/src/lib/reviewDecisions.test.ts`).
-- Persisted scan history and named review plans with atomic JSON replacement and validated plan paths (`run_store.py`, `video_dedup.py`, `tests/test_run_history.py`).
-- Built local browser previews that stream FFmpeg-transcoded video when a source format is not browser-native (`video_dedup.py`, `tests/test_video_dedup.py`).
+- Built a staged scanner that checks SHA-256 digests, ranks a bounded keyframe-token index, and verifies likely pairs at fixed intervals (`video_dedup.py:compute_exact_groups`, `video_dedup.py:build_candidates`, `video_dedup.py:detailed_match`).
+- Matched watermarked footage in regression cases by combining whole-frame and regional perceptual hashes while excluding uninformative regions (`video_dedup.py:sample_distance`, `tests/test_watermarks.py:RegionalFingerprintTests.test_moving_obstructions_survive_index_and_temporal_confirmation`; commit `6c71cf0`).
+- Calculated directional timeline coverage so a contained clip and its compilation can have different covered percentages (`video_dedup.py:detailed_match`, `tests/test_video_dedup.py:FingerprintTests.test_directional_coverage_for_contained_clip`).
+- Split review groups at disjoint clips in a shared compilation while carrying exact-copy aliases into each relevant group (`video_dedup.py:connected_components`, `tests/test_video_dedup.py:FingerprintTests.test_exact_aliases_are_repeated_across_disjoint_clip_groups`; commit `a5eead7`).
+- Preferred retaining a compilation when its parts are fully covered, then checked each proposed removal against the remaining keepers (`video_dedup.py:automatic_removal_order`, `tests/test_video_dedup.py:FingerprintTests.test_covering_strategy_prefers_compilation_over_higher_quality_parts`; commit `fec73ed`).
+- Reused fingerprints, exact hashes, and decoding failures through a SQLite cache keyed by file metadata; corrupt fingerprint entries are evicted for recomputation (`video_dedup.py:FingerprintCache`, `tests/test_video_dedup.py:FingerprintTests.test_cache_discards_a_corrupt_fingerprint_row`).
+- Separated review plans from file operations; command-line apply checks file size and modification time, defaults to quarantine, and requires confirmation for permanent deletion unless explicitly bypassed (`video_dedup.py:apply_plan`).
+- Rechecked both the removal target and its covering files before permanent browser deletion, refusing changed files (`video_dedup.py:WebReviewState._apply_reviewed`, `tests/test_web_operations.py:WebOperationTests.test_changed_keeper_is_refused_for_permanent_delete`; commit `f5c8246`).
+- Synchronized decisions for files shared by overlapping review sets and excluded explicit keepers from the removal list (`review-ui/src/lib/reviewDecisions.ts:updateDecisions`, `review-ui/src/lib/reviewDecisions.ts:removalFiles`; commit `ddde4cd`).
+- Persisted scan history and named plans with atomic JSON replacement and constrained saved-plan paths (`run_store.py:write_json`, `run_store.py:plan_path`, `tests/test_run_history.py:RunHistoryTests.test_failed_atomic_replace_preserves_existing_json`; commit `f5c8246`).
+- Prevented concurrent review mutations while allowing operation progress to be read (`video_dedup.py:exclusive_review_operation`, `tests/test_web_operations.py:WebOperationTests.test_progress_is_readable_during_quarantine_and_mutations_rejected`; commit `f5c8246`).
+- Built a local review server with byte-range video delivery and on-demand FFmpeg previews for unsupported source formats (`video_dedup.py:3292-3410`, `tests/test_video_dedup.py:EndToEndVideoTests.test_mpeg_source_streams_as_fragmented_mp4_preview`).
 
 ## Quantified outcomes
 
-- Added 73 Python test methods through `fec73ed` (`git grep -n -E '^[[:space:]]*def test_' fec73ed -- tests | Measure-Object -Line`).
-- Added 8 frontend unit tests through `fec73ed` (`git grep -n -E '^[[:space:]]*(test|it)\(' fec73ed -- 'review-ui/src/lib/*.test.ts' | Measure-Object -Line`).
-- Documented a local scan with 5,513 discovered files, 4,715 scanned files, and 183,489 candidate pairs; the underlying report and cache were local, while the summary is checked in (`docs/performance-research.md` at `fec73ed`).
+- Counted 73 Python test methods in the repository at `fec73ed` (`git grep -n -E '^[[:space:]]*def test_' fec73ed -- tests | Measure-Object -Line`). This is a static count, not a coverage or pass-rate claim.
+- Counted 8 frontend unit-test calls at `fec73ed` (`git grep -n -E '^[[:space:]]*(test|it)\(' fec73ed -- 'review-ui/src/lib/*.test.ts' | Measure-Object -Line`).
+- Documented one local scan of 5,513 discovered and 4,715 scanned files, with 183,489 candidate pairs and 37,901.97 seconds elapsed; the report and cache remained local (`docs/performance-research.md:15-30`; commit `fec73ed`).
+- Compared matching on 128 cached pairs over two runs per configuration: the documented median was 4.297 seconds serial and 3.986 seconds with two processes. Most sampled pairs were known matches, and the short batch ran alongside other workloads; it is not an end-to-end speedup measurement (`docs/performance-research.md:53-78`; commit `fec73ed`).
 
 ## Skills demonstrated
 
@@ -63,12 +70,14 @@ Timeline: 2026-08 – present (`git log --reverse --format=%as`, `git log -1 --f
   - Evidence:
     - Orchestrated candidate generation and detailed matching in the scan pipeline — `video_dedup.py:_scan`.
     - Wrote review data through a temporary file and atomic replacement — `run_store.py:write_json` (commit `f5c8246`).
+    - Preserved per-run success and failure records without overwriting the previous export on scan failure — `video_dedup.py:scan`, `tests/test_run_history.py:RunHistoryTests.test_scan_history_keeps_success_failure_and_previous_export` (commit `f5c8246`).
 
 - Name: TypeScript
   - Context: Implemented typed review decisions and browser requests.
   - Evidence:
     - Synchronized keeper choices across reviewed sets sharing a file — `review-ui/src/lib/reviewDecisions.ts:updateDecisions` (commit `ddde4cd`).
     - Typed response payloads and surfaced failed requests to the interface — `review-ui/src/lib/api.ts:requestJson`.
+    - Kept bulk selection limited to explicitly selected sets even when sets share videos — `review-ui/src/lib/groupSelection.ts:updateGroupSelection`, `review-ui/src/lib/groupSelection.test.ts:23-30` (commit `ddde4cd`).
 
 - Name: JavaScript
   - Context: Wrote browser smoke scripts for review operations and saved plans.
@@ -95,6 +104,7 @@ Timeline: 2026-08 – present (`git log --reverse --format=%as`, `git log -1 --f
   - Evidence:
     - Managed decision updates and undo history with a reducer — `review-ui/src/App.tsx:reviewReducer`.
     - Polled scan and removal status and refreshed the review session after operations — `review-ui/src/App.tsx:116-145`.
+    - Warned before closing a review with unsaved changes or a removal in progress — `review-ui/src/App.tsx:147-155`.
 
 - Name: Tailwind CSS
   - Context: Applied responsive layout utilities and a shared color theme.
@@ -110,6 +120,7 @@ Timeline: 2026-08 – present (`git log --reverse --format=%as`, `git log -1 --f
   - Evidence:
     - Created cache tables and enabled write-ahead logging — `video_dedup.py:FingerprintCache.__init__`.
     - Evicted unreadable fingerprint entries so a later scan can recompute them — `video_dedup.py:FingerprintCache.get`.
+    - Reused unchanged exact file hashes without reading each file again — `tests/test_video_dedup.py:FingerprintTests.test_exact_hashes_are_reused_from_cache`.
 
 - Name: SQL
   - Context: Defined cache keys and used parameterized reads and writes.
@@ -124,12 +135,13 @@ Timeline: 2026-08 – present (`git log --reverse --format=%as`, `git log -1 --f
   - Evidence:
     - Verified a failed replacement leaves the existing saved data intact — `tests/test_run_history.py:RunHistoryTests.test_failed_atomic_replace_preserves_existing_json`.
     - Checked that permanent deletion refuses a changed retained file — `tests/test_web_operations.py:WebOperationTests.test_changed_keeper_is_refused_for_permanent_delete`.
+    - Added a scanner test with an encoded re-encode and two-part compilation — `tests/test_video_dedup.py:EndToEndVideoTests.test_reencode_and_two_part_compilation`.
 
 - Name: Playwright
-  - Context: Exercised browser review workflows and responsive layouts.
+  - Context: Wrote browser checks for review workflows and responsive layouts.
   - Evidence:
-    - Checked review controls, accessible names, and desktop and mobile layouts — `review-ui/scripts/browser-smoke.cjs:main`.
-    - Checked shared-file choices across review sets and after a page reload — `review-ui/scripts/shared-removal-smoke.cjs:checkRemoval`.
+    - Added checks for review controls, accessible names, and desktop and mobile layouts — `review-ui/scripts/browser-smoke.cjs:main`.
+    - Added checks for shared-file choices across review sets and after a page reload — `review-ui/scripts/shared-removal-smoke.cjs:checkRemoval`.
 
 ### Architecture
 
@@ -138,6 +150,29 @@ Timeline: 2026-08 – present (`git log --reverse --format=%as`, `git log -1 --f
   - Evidence:
     - Computed whole-frame and regional fingerprints for each sampled frame — `video_dedup.py:frame_sample`, `video_dedup.py:regional_frame_sample`.
     - Tested that moving obstructions survive candidate lookup and temporal matching — `tests/test_watermarks.py:RegionalFingerprintTests.test_moving_obstructions_survive_index_and_temporal_confirmation`.
+    - Required enough informative matching tiles so a shared logo or flat background alone does not establish a regional match — `video_dedup.py:sample_distance`, `tests/test_watermarks.py:RegionalFingerprintTests.test_shared_logo_and_flat_background_tiles_are_not_enough`.
+
+- Name: Graph algorithms
+  - Context: Grouped matching video clips without conflating unrelated portions of the same compilation.
+  - Evidence:
+    - Used disjoint-set relationships for exact copies and overlapping match ranges to form clip-specific groups — `video_dedup.py:connected_components` (commit `a5eead7`).
+    - Traversed exact-copy links when deciding whether retained videos fully cover a proposed removal — `video_dedup.py:covered_by`, `tests/test_video_dedup.py:FingerprintTests.test_exact_duplicate_coverage_is_transitive`.
+
+- Name: Data integrity
+  - Context: Guarded review data and media files against partial writes, invalid paths, and stale file metadata.
+  - Evidence:
+    - Flushed saved JSON before atomic replacement and tested that a failed replacement preserves the prior file — `run_store.py:write_json`, `tests/test_run_history.py:RunHistoryTests.test_failed_atomic_replace_preserves_existing_json` (commit `f5c8246`).
+    - Rejected saved-plan identifiers that escape the run directory — `run_store.py:plan_path`, `tests/test_run_history.py:RunHistoryTests.test_invalid_names_ids_and_busy_load_leave_state_unchanged` (commit `f5c8246`).
+    - Refused permanent deletion when a selected covering file changed after the scan — `video_dedup.py:WebReviewState._apply_reviewed`, `tests/test_web_operations.py:WebOperationTests.test_changed_keeper_is_refused_for_permanent_delete` (commit `f5c8246`).
+
+- Name: Accessibility
+  - Context: Added labeled review controls and keyboard and reduced-motion accommodations to the browser interface.
+  - Evidence:
+    - Named the duplicate-set navigation for assistive technologies — `review-ui/src/components/ReviewWorkspace.tsx:141-158` (commit `5f0fdd8`).
+    - Labeled each video preview — `review-ui/src/components/FileCard.tsx:80-88` (commit `a2eb1b2`).
+    - Added visible keyboard-focus styling — `review-ui/src/index.css:60-63` (commit `edef025`).
+    - Reduced animation and transition durations when requested — `review-ui/src/index.css:94-102` (commit `a2eb1b2`).
+    - Checked that buttons and checkboxes have accessible names in the browser smoke script — `review-ui/scripts/browser-smoke.cjs:main`.
 
 - Name: SHA-256
   - Context: Identified exact duplicate candidates by hashing file contents.
@@ -150,12 +185,20 @@ Timeline: 2026-08 – present (`git log --reverse --format=%as`, `git log -1 --f
   - Evidence:
     - Ran detailed extraction in a worker pool while keeping cache access on the owner thread — `video_dedup.py:load_detailed_records`.
     - Rejected overlapping review mutations with a nonblocking operation lock — `video_dedup.py:exclusive_review_operation`.
+    - Tested that progress stays readable while save, rescan, settings, and apply mutations are refused during quarantine — `tests/test_web_operations.py:WebOperationTests.test_progress_is_readable_during_quarantine_and_mutations_rejected` (commit `f5c8246`).
 
 - Name: API design
   - Context: Connected the local review interface to session, plan, and file operations.
   - Evidence:
     - Routed review requests and returned errors for invalid bodies or missing request headers — `video_dedup.py:3492-3548`.
     - Defined client calls for loading and renaming plans and applying reviewed decisions — `review-ui/src/lib/api.ts:66-82`.
+    - Served requested byte ranges for report-backed video previews — `video_dedup.py:3292-3342`, `tests/test_video_dedup.py:FingerprintTests.test_web_review_handler_serves_session_and_video_ranges`.
+
+- Name: Performance profiling
+  - Context: Investigated matching costs and compared local execution strategies without claiming a production speedup.
+  - Evidence:
+    - Compared serial, threaded, and process-based matching on cached pairs and recorded the batch size, repeated runs, and concurrent workload — `docs/performance-research.md:53-78` (commit `fec73ed`).
+    - Recorded call-path timings and profiling overhead to identify candidate matching work for further investigation — `docs/performance-research.md:80-89` (commit `fec73ed`).
 
 ### Tooling
 
@@ -166,7 +209,7 @@ Timeline: 2026-08 – present (`git log --reverse --format=%as`, `git log -1 --f
     - Streamed a transcoded preview for sources that need conversion — `video_dedup.py:3358-3410`.
 
 - Name: Node.js
-  - Context: Ran frontend unit tests and controlled local browser-test fixtures.
+  - Context: Configured frontend unit tests and scripted local browser-test fixtures.
   - Evidence:
     - Used the built-in test runner for the review decision tests — `review-ui/package.json:10`, `review-ui/src/lib/reviewDecisions.test.ts:1-16`.
     - Spawned and monitored the local fixture server for an operation smoke test — `review-ui/scripts/operations-smoke.cjs:38-49`.
@@ -188,3 +231,8 @@ Timeline: 2026-08 – present (`git log --reverse --format=%as`, `git log -1 --f
   - Evidence:
     - Serialized saved data to a temporary file before replacing the destination — `run_store.py:write_json`.
     - Serialized plan decisions in the browser request — `review-ui/src/lib/api.ts:savePlan`.
+
+- Name: cProfile
+  - Context: Documented a local profile of the detailed matching call path and its measurement overhead.
+  - Evidence:
+    - Recorded cumulative timings for matching and distance functions alongside the profiled and unprofiled runtimes — `docs/performance-research.md:80-89` (commit `fec73ed`).
