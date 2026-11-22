@@ -87,11 +87,38 @@ class AudioReviewTests(unittest.TestCase):
         self.reviewer.review(self.files, self.matches, 1)
         self.assertEqual(self.transcribe.call_count, 2)
 
+    def test_held_transcript_reconciliation_updates_cache_without_upload(self):
+        self.transcribe.return_value.pop("usage")
+        self.reviewer.review(self.files, self.matches, 1)
+        with self.reviewer._db() as db:
+            keys = [row[0] for row in db.execute("SELECT id FROM transcripts WHERE state = 'ready'")]
+        for key in keys:
+            self.reviewer.reconcile_transcription(key, 150)
+        result = self.reviewer.review(self.files, self.matches, 1)
+        self.assertEqual(self.transcribe.call_count, 2)
+        self.assertEqual(self.meter.snapshot()["reserved_micros"], 0)
+        self.assertEqual(self.meter.snapshot()["spent_micros"], 300)
+        self.assertEqual(result["evidence"][0]["aTranscript"]["accounting"], "settled")
+
     def test_budget_failure_occurs_before_any_upload(self):
         self.meter.reserve("other-work", 30_000_000)
         result = self.reviewer.review(self.files, self.matches, 1)
         self.assertEqual(result["evidence"][0]["status"], "unavailable")
         self.transcribe.assert_not_called()
+
+    def test_pre_submission_failure_can_be_retried_without_duplicate_upload(self):
+        submitted = self.meter.submitted
+        with mock.patch.object(self.meter, "submitted", side_effect=audio.CreditBudgetError("temporary storage error")):
+            first = self.reviewer.review(self.files, self.matches, 1)
+        self.assertTrue(first["partial"])
+        self.transcribe.assert_not_called()
+        self.assertEqual(self.meter.snapshot()["reserved_micros"], 0)
+        self.assertEqual(self.meter.submitted, submitted)
+
+        second = self.reviewer.review(self.files, self.matches, 1)
+        self.assertFalse(second["partial"])
+        self.assertEqual(self.transcribe.call_count, 2)
+        self.assertEqual(self.meter.snapshot()["spent_micros"], 300)
 
     def test_concurrent_same_audio_is_submitted_once(self):
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
@@ -108,6 +135,87 @@ class AudioReviewTests(unittest.TestCase):
         with self.assertRaises(audio.AudioReviewError):
             self.reviewer.review(self.files, self.matches, 1)
         self.transcribe.assert_not_called()
+
+    def test_missing_source_reports_rescan_instead_of_plan_error(self):
+        Path(self.files[0]["path"]).unlink()
+        with self.assertRaisesRegex(audio.AudioReviewError, "Rescan"):
+            self.reviewer.review(self.files, self.matches, 1)
+        self.transcribe.assert_not_called()
+
+    def test_uncertain_transcription_can_be_retried_only_after_reconciliation(self):
+        self.transcribe.side_effect = audio.AudioReviewError("Provider timeout")
+        first = self.reviewer.review(self.files, self.matches, 1)
+        self.assertTrue(first["partial"])
+        with self.reviewer._db() as db:
+            cache_key, reservation_id = db.execute("SELECT id, reservation FROM transcripts WHERE state = 'unknown'").fetchone()
+        self.reviewer.review(self.files, self.matches, 1)
+        self.assertEqual(self.transcribe.call_count, 1)
+
+        self.reviewer.reconcile_transcription(cache_key, 100)
+        self.assertEqual(self.meter.inspect(reservation_id)["state"], "settled")
+        self.transcribe.side_effect = None
+        second = self.reviewer.review(self.files, self.matches, 1)
+        self.assertFalse(second["partial"])
+        self.assertEqual(self.transcribe.call_count, 3)
+        self.assertEqual(self.meter.snapshot()["spent_micros"], 400)
+
+    def test_reconciliation_can_resume_after_ledger_commit(self):
+        self.transcribe.side_effect = audio.AudioReviewError("Provider timeout")
+        self.reviewer.review(self.files, self.matches, 1)
+        with self.reviewer._db() as db:
+            cache_key, reservation_id = db.execute("SELECT id, reservation FROM transcripts WHERE state = 'unknown'").fetchone()
+        allow_retry = self.meter.allow_retry_after_settlement
+
+        def interrupt_after_ledger_commit(reservation):
+            allow_retry(reservation)
+            raise RuntimeError("simulated interruption")
+
+        with mock.patch.object(self.meter, "allow_retry_after_settlement", side_effect=interrupt_after_ledger_commit):
+            with self.assertRaisesRegex(RuntimeError, "simulated interruption"):
+                self.reviewer.reconcile_transcription(cache_key, 100)
+        self.assertEqual(self.meter.inspect(reservation_id)["state"], "settled")
+        self.reviewer.reconcile_transcription(cache_key, 100)
+        self.transcribe.side_effect = None
+        self.assertFalse(self.reviewer.review(self.files, self.matches, 1)["partial"])
+        self.assertEqual(self.transcribe.call_count, 3)
+        self.assertEqual(self.meter.snapshot()["spent_micros"], 400)
+
+    def test_reconciliation_refuses_a_transcription_still_in_progress(self):
+        reservation = self.meter.reserve("audio", 100, "audio:pending")
+        self.meter.submitted(reservation.id)
+        with self.reviewer._db() as db:
+            db.execute("INSERT INTO transcripts VALUES (?, 'pending', NULL, ?)", ("pending", reservation.id))
+        with self.assertRaises(audio.AudioReviewError):
+            self.reviewer.reconcile_transcription("pending", 100)
+        self.assertEqual(self.meter.inspect(reservation.id)["state"], "submitted")
+
+    def test_stopped_pending_recovery_finds_unlinked_reservation(self):
+        reservation = self.meter.reserve("audio", 100, "audio:pending")
+        with self.reviewer._db() as db:
+            db.execute("INSERT INTO transcripts VALUES ('pending', 'pending', NULL, NULL)")
+        self.reviewer.reconcile_transcription("pending", 0, confirm_stopped=True)
+        self.assertEqual(self.meter.inspect(reservation.id)["state"], "settled")
+        self.meter.reserve("audio", 100, "audio:pending")
+        with self.reviewer._db() as db:
+            self.assertIsNone(db.execute("SELECT * FROM transcripts WHERE id = 'pending'").fetchone())
+
+    def test_stopped_pending_recovery_before_reservation_has_no_charge(self):
+        with self.reviewer._db() as db:
+            db.execute("INSERT INTO transcripts VALUES ('pending', 'pending', NULL, NULL)")
+        with self.assertRaises(audio.AudioReviewError):
+            self.reviewer.reconcile_transcription("pending", 1, confirm_stopped=True)
+        self.reviewer.reconcile_transcription("pending", 0, confirm_stopped=True)
+        self.assertEqual(self.meter.snapshot()["spent_micros"], 0)
+
+    def test_stopped_pending_recovery_accepts_a_released_reservation(self):
+        reservation = self.meter.reserve("audio", 100, "audio:pending")
+        self.meter.release(reservation.id)
+        with self.reviewer._db() as db:
+            db.execute("INSERT INTO transcripts VALUES ('pending', 'pending', NULL, ?)", (reservation.id,))
+        with self.assertRaises(audio.AudioReviewError):
+            self.reviewer.reconcile_transcription("pending", 1, confirm_stopped=True)
+        self.reviewer.reconcile_transcription("pending", 0, confirm_stopped=True)
+        self.meter.reserve("audio", 100, "audio:pending")
 
     def test_language_and_short_speech_are_not_equivalence(self):
         result = audio.compare_text({"text": "one", "languages": []}, {"text": "one", "languages": []})
@@ -199,6 +307,39 @@ class AudioReviewTests(unittest.TestCase):
         self.assertNotIn(str(self.root).encode(), request.data)
         with self.assertRaises(audio.AudioReviewError):
             audio._NoRedirect().redirect_request(None, None, 307, "", {}, "https://example.invalid")
+
+    def test_malformed_provider_json_leaves_a_reviewable_partial_result(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b"not json"
+        opener = mock.Mock()
+        opener.open.return_value = response
+        self.reviewer.transcribe = audio.official_transcribe
+        with mock.patch("urllib.request.build_opener", return_value=opener):
+            result = self.reviewer.review(self.files, self.matches, 1)
+        self.assertTrue(result["partial"])
+        self.assertEqual(result["evidence"][0]["status"], "unavailable")
+        self.assertEqual(self.meter.snapshot()["reserved_micros"], 225)
+        self.assertEqual(self.reviewer.saved(result["groupKey"]), result)
+
+    def test_interrupted_provider_read_leaves_a_reviewable_partial_result(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.side_effect = http.client.IncompleteRead(b"partial")
+        opener = mock.Mock()
+        opener.open.return_value = response
+        self.reviewer.transcribe = audio.official_transcribe
+        with mock.patch("urllib.request.build_opener", return_value=opener):
+            result = self.reviewer.review(self.files, self.matches, 1)
+        self.assertTrue(result["partial"])
+        self.assertEqual(result["evidence"][0]["status"], "unavailable")
+        self.assertEqual(self.meter.snapshot()["reserved_micros"], 225)
+        self.assertEqual(self.reviewer.saved(result["groupKey"]), result)
+
+    def test_decoder_rejects_audio_longer_than_requested(self):
+        probe = subprocess.CompletedProcess([], 0, stdout=b'{"streams": [{"index": 0}]}')
+        decoded = subprocess.CompletedProcess([], 0, stdout=b"\x01\x00" * audio.SAMPLE_RATE * 61)
+        with mock.patch("shutil.which", return_value="ffmpeg"), mock.patch("subprocess.run", side_effect=[probe, decoded]):
+            with self.assertRaises(audio.AudioReviewError):
+                audio.extract_clip(self.files[0], 0, 60)
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg is required")
     def test_real_decoder_extracts_only_selected_interval(self):

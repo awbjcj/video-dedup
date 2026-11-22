@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import array
 import hashlib
+import http.client
 import io
 import json
 import math
@@ -18,7 +19,6 @@ import sqlite3
 import subprocess
 import sys
 import unicodedata
-import urllib.error
 import urllib.request
 import wave
 from contextlib import contextmanager
@@ -80,8 +80,11 @@ def group_key(files: dict[int, dict], matches: list[dict], interval: float) -> s
 
 
 def validate_source(item: dict) -> Path:
-    path = Path(item["path"]).resolve(strict=True)
-    stat = path.stat()
+    try:
+        path = Path(item["path"]).resolve(strict=True)
+        stat = path.stat()
+    except OSError as exc:
+        raise AudioReviewError("A source video changed since scanning. Rescan before audio review.") from exc
     if not path.is_file() or stat.st_size != item.get("size_bytes") or stat.st_mtime_ns != item.get("mtime_ns"):
         raise AudioReviewError("A source video changed since scanning. Rescan before audio review.")
     return path
@@ -109,9 +112,12 @@ def extract_clip(item: dict, start: float, duration: float) -> AudioClip | None:
     except (subprocess.SubprocessError, json.JSONDecodeError) as exc:
         raise AudioReviewError("Local audio extraction failed; no audio was uploaded.") from exc
     validate_source(item)
-    if len(result.stdout) > (MAX_CLIP_SECONDS + 1) * SAMPLE_RATE * 2 or len(result.stdout) % 2:
+    max_bytes = math.floor(duration * SAMPLE_RATE) * 2
+    if len(result.stdout) > max_bytes + 2 or len(result.stdout) % 2:
         raise AudioReviewError("Decoded audio exceeded its bounded clip size.")
-    return AudioClip(result.stdout)
+    # Allow for decoder rounding by one sample, but never upload beyond the
+    # requested interval or the hard clip limit.
+    return AudioClip(result.stdout[:max_bytes])
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -132,11 +138,14 @@ def official_transcribe(api_key: str, clip: AudioClip) -> dict:
     try:
         with urllib.request.build_opener(_NoRedirect).open(request, timeout=90) as response:
             data = response.read(1024 * 1024 + 1)
-    except (urllib.error.URLError, TimeoutError) as exc:
+    except (OSError, http.client.HTTPException) as exc:
         raise AudioReviewError("Official transcription failed or timed out; its budget hold was retained.") from exc
     if len(data) > 1024 * 1024:
         raise AudioReviewError("Official transcription response exceeded the size limit.")
-    result = json.loads(data)
+    try:
+        result = json.loads(data)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise AudioReviewError("Official transcription returned an invalid response.") from exc
     if not isinstance(result, dict) or not isinstance(result.get("text"), str):
         raise AudioReviewError("Official transcription returned an invalid response.")
     return result
@@ -252,6 +261,59 @@ class AudioReviewer:
                 else:
                     db.execute("DELETE FROM transcripts WHERE id = ?", (key,))
             raise
+
+    def reconcile_transcription(self, cache_key: str, actual_micros: int, *, confirm_stopped: bool = False) -> None:
+        """Record a verified charge and resolve a held or uncertain transcription.
+
+        Pending entries are recoverable only after the operator stops every
+        process using this cache and explicitly confirms that no request is in flight.
+        """
+        if type(actual_micros) is not int or actual_micros < 0:
+            raise AudioReviewError("The verified charge must be nonnegative integer microdollars.")
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT * FROM transcripts WHERE id = ?", (cache_key,)).fetchone()
+            if row is None:
+                raise AudioReviewError("The transcription cache entry was not found.")
+            if row["state"] == "ready":
+                payload = json.loads(row["payload"])
+                if payload.get("accounting") != "held" or not row["reservation"]:
+                    raise AudioReviewError("Only a held transcript can be reconciled.")
+                self.meter.settle(row["reservation"], actual_micros)
+                payload.update(accounting="settled", chargedMicros=actual_micros)
+                db.execute("UPDATE transcripts SET payload = ? WHERE id = ?", (json.dumps(payload), cache_key))
+                return
+            if row["state"] not in {"unknown", "pending"}:
+                raise AudioReviewError("Only a held or uncertain transcription can be reconciled.")
+            if row["state"] == "pending" and confirm_stopped is not True:
+                raise AudioReviewError("Stop every process using the cache before reconciling a pending request.")
+            reservation_id = row["reservation"]
+            if reservation_id is None:
+                reservation = self.meter.inspect_request("audio:" + cache_key)
+                if reservation is None:
+                    if row["state"] != "pending" or actual_micros != 0:
+                        raise AudioReviewError("No matching reservation was found; reconcile the ledger manually.")
+                    db.execute("DELETE FROM transcripts WHERE id = ?", (cache_key,))
+                    return
+                reservation_id = reservation["id"]
+                # Persist the link before changing the ledger, so recovery is
+                # repeatable even if this process stops between the two stores.
+                db.execute("UPDATE transcripts SET reservation = ? WHERE id = ?", (reservation_id, cache_key))
+
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT state, reservation FROM transcripts WHERE id = ?", (cache_key,)).fetchone()
+            if row is None or row["reservation"] != reservation_id or row["state"] not in {"unknown", "pending"}:
+                raise AudioReviewError("The transcription changed during reconciliation. Inspect it before retrying.")
+            if row["state"] == "pending" and confirm_stopped is not True:
+                raise AudioReviewError("Stop every process using the cache before reconciling a pending request.")
+            if self.meter.inspect(reservation_id)["state"] == "released":
+                if actual_micros != 0:
+                    raise AudioReviewError("A released reservation cannot have a charge; reconcile the ledger manually.")
+            else:
+                self.meter.settle(reservation_id, actual_micros)
+                self.meter.allow_retry_after_settlement(reservation_id)
+            db.execute("DELETE FROM transcripts WHERE id = ?", (cache_key,))
 
     def review(self, files: dict[int, dict], matches: list[dict], interval: float) -> dict:
         if not math.isfinite(interval) or interval <= 0:

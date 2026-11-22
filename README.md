@@ -120,12 +120,47 @@ The dedicated key does not fall back to `OPENAI_API_KEY`, and a generic
 The local `runs/audio-evidence/` directory contains transcript cache entries and
 per-set evidence JSON. Treat transcripts as private media data. Keep the durable
 credit ledger when clearing evidence; deleting it would erase admission history.
-Uncertain cache rows store their reservation ID. Reconcile the provider's actual
-charge explicitly with `OpenAICreditMeter.inspect(id)` and `settle(id, micros)`;
-only `release(id)` work known not to have been submitted. Submitted requests
-cannot be released through that method. An uncertain transcript remains blocked
-until an operator resolves the corresponding cache entry; there is no automatic
-retry button that would charge twice.
+
+To reconcile an interrupted request or a transcript with missing usage, first
+stop every review process using the evidence cache, and verify the actual charge
+with the provider. Keep the same ledger path and credit-period environment used
+for that request. From the project directory, inspect the affected cache entries:
+
+```powershell
+@'
+import sqlite3
+from pathlib import Path
+root = Path("runs/audio-evidence")  # use the evidence directory for your report
+with sqlite3.connect(root / "transcripts.sqlite3") as db:
+    for key, state, reservation in db.execute("SELECT id, state, reservation FROM transcripts"):
+        print(key, state, reservation)
+'@ | python -
+```
+
+Choose the cache key and the provider-verified charge, then run the following
+with the placeholders replaced. A charge of zero is appropriate only when the
+provider confirms no charge. `confirm_stopped=True` is required to recover a
+`pending` entry, since an active request could otherwise be submitted twice.
+
+```powershell
+@'
+from pathlib import Path
+from audio_semantics import AudioReviewer
+from openai_credit_meter import usd_micros
+reviewer = AudioReviewer.from_env(Path("runs/audio-evidence"))
+reviewer.reconcile_transcription("<cache key>", usd_micros("<verified USD charge>"), confirm_stopped=True)
+'@ | python -
+```
+
+Reconciliation records the charge and preserves its ledger history. An
+uncertain entry is then eligible for a new upload only after another explicit
+review click. A cached transcript whose billing was held remains cached; review
+the set again to refresh its displayed accounting. If the charge is still
+unknown, leave the entry and hold in place. There is no automatic paid retry.
+
+For a browser smoke test against a running local review, use
+`pnpm -C review-ui test:audio -- http://127.0.0.1:8765/`. Its audio endpoints
+are mocked and it makes no paid requests.
 
 ## Typical workflow
 

@@ -9,6 +9,7 @@
     "bundle": "parcel build index.html --dist-dir dist --no-source-maps && html-inline dist/index.html > bundle.html",
     "test:unit": "node --experimental-strip-types --test src/lib/*.test.ts",
     "test:browser": "node scripts/browser-smoke.cjs",
+    "test:audio": "node scripts/audio-review-smoke.cjs",
     "lint": "oxlint",
     "preview": "vite preview"
   },

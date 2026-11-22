@@ -53,13 +53,11 @@ async function main() {
       await page.getByText(initialSession.summary.fileCount.toLocaleString(), { exact: true }).count(),
       1,
     )
-    assert.equal(
-      await page.getByText(
-        `${initialSession.summary.filteredShortFileCount.toLocaleString()} clips under 10 sec hidden`,
-        { exact: true },
-      ).count(),
-      1,
+    const hiddenShortClips = page.getByText(
+      `${initialSession.summary.filteredShortFileCount.toLocaleString()} clips under ${initialSession.minimumDuration.toLocaleString()} sec hidden`,
+      { exact: true },
     )
+    assert.equal(await hiddenShortClips.count(), initialSession.summary.filteredShortFileCount > 0 ? 1 : 0)
 
     await page.getByRole('button', { name: 'Settings' }).click()
     const settingsDialog = page.getByRole('dialog', { name: 'Detection and safety settings' })
@@ -134,7 +132,7 @@ async function main() {
 
     await page.getByRole('button', { name: 'Apply reviewed' }).click()
     const applyDialog = page.getByRole('dialog', { name: 'Apply reviewed removals?' })
-    await applyDialog.getByText(/Unreviewed sets stay untouched/i).waitFor()
+    await applyDialog.getByText(/coverage-safe removals selected in reviewed sets/i).waitFor()
     await applyDialog.getByText(/removed from the active plan and review queue/i).waitFor()
     await applyDialog.getByRole('button', { name: 'Cancel' }).click()
     await page.getByRole('button', { name: 'Undo' }).click()
@@ -150,8 +148,9 @@ async function main() {
     await dialog.getByRole('heading', { name: 'Save this review plan?' }).waitFor()
     assert.match(
       await dialog.innerText(),
-      new RegExp(`${activeGroupCount.toLocaleString()} unreviewed sets will keep every file`, 'i'),
+      new RegExp(`${activeGroupCount.toLocaleString()} sets still need review`, 'i'),
     )
+    assert.match(await dialog.innerText(), /Shared files keep the selections made in other sets/i)
     await dialog.getByRole('button', { name: 'Continue reviewing' }).click()
 
     const groupSearch = page.getByRole('searchbox', { name: 'Search duplicate sets' })

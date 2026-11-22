@@ -183,9 +183,6 @@ class OpenAICreditMeter:
     def reserve(self, feature: str, estimated_micros: int, request_id: str | None = None, *, nonessential: bool = False) -> Reservation:
         """Allocate a conservative maximum cost before any billable request."""
         _units(estimated_micros, positive=True)
-        now = _moment(self.clock())
-        if not self.start <= now < self.end:
-            raise CreditBudgetError("The configured official API credit period is not active")
         if not feature or len(feature) > 120:
             raise CreditBudgetError("A bounded feature name is required")
         request_id = request_id or uuid4().hex
@@ -193,11 +190,20 @@ class OpenAICreditMeter:
             raise CreditBudgetError("Request identity is too long")
         reservation = Reservation(uuid4().hex, self.project, feature, estimated_micros, request_id)
         with self._transaction() as db:
-            if db.execute("SELECT 1 FROM credit_reservations WHERE cycle = ? AND project = ? AND request_id = ?", (self.cycle, self.project, request_id)).fetchone():
+            now = _moment(self.clock())
+            if not self.start <= now < self.end:
+                raise CreditBudgetError("The configured official API credit period is not active")
+            previous = db.execute("SELECT id, state FROM credit_reservations WHERE cycle = ? AND project = ? AND request_id = ?", (self.cycle, self.project, request_id)).fetchone()
+            if previous and previous["state"] != "released":
                 raise DuplicateReservation("This official request is already recorded; inspect its state before retrying")
             state = self._snapshot(db)
             if estimated_micros > state["remaining_micros"] or (nonessential and state["threshold"] in {"limited", "exhausted"}):
                 raise BudgetExceeded("Official API budget is exhausted or reserved by other requests")
+            if previous:
+                # Preserve the released record and its id while making the
+                # logical request identity available to exactly one retry.
+                archived_identity = f"{request_id}#released:{previous['id']}"
+                db.execute("UPDATE credit_reservations SET request_id = ? WHERE id = ?", (archived_identity, previous["id"]))
             db.execute("INSERT INTO credit_reservations VALUES (?, ?, ?, ?, ?, ?, NULL, 'reserved', ?, ?)", (reservation.id, self.cycle, self.project, feature, request_id, estimated_micros, now.isoformat(), now.isoformat()))
         return reservation
 
@@ -210,10 +216,13 @@ class OpenAICreditMeter:
     def submitted(self, reservation_id: str) -> None:
         """Mark a possible billable effect immediately before network I/O."""
         with self._transaction() as db:
+            now = _moment(self.clock())
+            if not self.start <= now < self.end:
+                raise CreditBudgetError("The configured official API credit period is not active")
             row = self._record(db, reservation_id)
             if row["state"] != "reserved":
                 raise CreditBudgetError("Only a fresh reservation can be submitted")
-            db.execute("UPDATE credit_reservations SET state = 'submitted', updated = ? WHERE id = ?", (self.clock().isoformat(), reservation_id))
+            db.execute("UPDATE credit_reservations SET state = 'submitted', updated = ? WHERE id = ?", (now.isoformat(), reservation_id))
 
     def unknown(self, reservation_id: str) -> None:
         """Retain the full allocation after an uncertain provider outcome."""
@@ -246,10 +255,26 @@ class OpenAICreditMeter:
                 raise CreditBudgetError("A released reservation cannot be settled")
             db.execute("UPDATE credit_reservations SET state = 'settled', actual = ?, updated = ? WHERE id = ?", (actual_micros, self.clock().isoformat(), reservation_id))
 
+    def allow_retry_after_settlement(self, reservation_id: str) -> None:
+        """Retire a reconciled request identity while retaining its charge and history."""
+        with self._transaction() as db:
+            row = self._record(db, reservation_id)
+            if row["state"] != "settled":
+                raise CreditBudgetError("Reconcile the actual charge before allowing a retry")
+            suffix = f"#reconciled:{reservation_id}"
+            if not row["request_id"].endswith(suffix):
+                db.execute("UPDATE credit_reservations SET request_id = ? WHERE id = ?", (row["request_id"] + suffix, reservation_id))
+
     def inspect(self, reservation_id: str) -> dict[str, Any]:
         """Read an allocation for explicit reconciliation or diagnostics."""
         with self._transaction() as db:
             return dict(self._record(db, reservation_id))
+
+    def inspect_request(self, request_id: str) -> dict[str, Any] | None:
+        """Find a request identity in this project and period, including its state."""
+        with self._transaction() as db:
+            row = db.execute("SELECT * FROM credit_reservations WHERE cycle = ? AND project = ? AND request_id = ?", (self.cycle, self.project, request_id)).fetchone()
+            return dict(row) if row else None
 
     def export_json(self) -> str:
         """Return a credential-free budget summary suitable for telemetry."""

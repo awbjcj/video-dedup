@@ -3,8 +3,10 @@
 import concurrent.futures
 import tempfile
 import unittest
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
 
 from openai_credit_meter import (
     BudgetExceeded, CreditBudgetError, DuplicateReservation,
@@ -62,6 +64,8 @@ class CreditMeterTests(unittest.TestCase):
             reopened.release(reservation.id)
         with self.assertRaises(DuplicateReservation):
             reopened.reserve("audio", 100, "audio-hash")
+        with self.assertRaises(CreditBudgetError):
+            reopened.allow_retry_after_settlement(reservation.id)
         reopened.settle(reservation.id, 90)
         reopened.settle(reservation.id, 90)
         self.assertEqual(reopened.snapshot()["spent_micros"], 90)
@@ -77,6 +81,27 @@ class CreditMeterTests(unittest.TestCase):
         self.assertEqual(meter.snapshot()["reserved_micros"], 0)
         with self.assertRaises(CreditBudgetError):
             meter.submitted(reservation.id)
+
+    def test_released_request_can_be_retried_once_without_losing_history(self):
+        meter = self.meter()
+        released = meter.reserve("audio", 10, "audio-hash")
+        meter.release(released.id)
+
+        def retry(_):
+            try:
+                return meter.reserve("audio", 10, "audio-hash")
+            except DuplicateReservation:
+                return None
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(retry, range(4)))
+        admitted = [result for result in results if result is not None]
+        self.assertEqual(len(admitted), 1)
+        self.assertNotEqual(admitted[0].id, released.id)
+        self.assertEqual(meter.inspect(released.id)["state"], "released")
+        meter.release(released.id)  # A stale caller cannot release the new hold.
+        self.assertEqual(meter.inspect(admitted[0].id)["state"], "reserved")
+        self.assertEqual(meter.snapshot()["reserved_micros"], 10)
 
     def test_thresholds_and_truthful_overrun(self):
         meter = self.meter(project_limit_micros=100)
@@ -102,6 +127,30 @@ class CreditMeterTests(unittest.TestCase):
                                       clock=lambda: self.now)
         self.assertEqual(next_period.snapshot()["spent_micros"], 0)
         next_period.reserve("new-cycle", 1)
+
+    def test_submission_is_rejected_at_cycle_end(self):
+        meter = self.meter()
+        reservation = meter.reserve("audio", 100)
+        self.now = datetime(2026, 12, 10, tzinfo=timezone.utc)
+        with self.assertRaises(CreditBudgetError):
+            meter.submitted(reservation.id)
+        meter.release(reservation.id)
+        self.assertEqual(meter.snapshot()["reserved_micros"], 0)
+
+    def test_reservation_rechecks_cycle_after_acquiring_ledger_lock(self):
+        meter = self.meter()
+        transaction = meter._transaction
+
+        @contextmanager
+        def transaction_at_cycle_end():
+            with transaction() as db:
+                self.now = datetime(2026, 12, 10, tzinfo=timezone.utc)
+                yield db
+
+        with mock.patch.object(meter, "_transaction", transaction_at_cycle_end):
+            with self.assertRaises(CreditBudgetError):
+                meter.reserve("audio", 100)
+        self.assertEqual(meter.snapshot()["reserved_micros"], 0)
 
     def test_configuration_fails_closed(self):
         self.assertIsNone(OpenAICreditMeter.from_env("video", {}))
