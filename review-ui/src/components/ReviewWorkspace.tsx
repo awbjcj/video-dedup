@@ -23,6 +23,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { FileCard } from '@/components/FileCard'
+import { AudioReviewPanel } from '@/components/AudioReviewPanel'
 import { formatBytes } from '@/lib/format'
 import type { Decision, DuplicateGroup, Strategy, VideoFile } from '@/types'
 
@@ -213,6 +214,8 @@ export function ReviewWorkspace({
           </div>
         </div>
       </section>
+
+      <AudioReviewPanel key={group.audioReviewKey || group.id} group={group} />
 
       <div className="px-4 py-5 lg:px-6 lg:py-6">
         <div className="mb-5 flex flex-wrap items-center gap-3 rounded-xl border border-stone-200 bg-white p-3 surface-shadow">

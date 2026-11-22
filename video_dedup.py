@@ -33,6 +33,8 @@ import urllib.parse
 import webbrowser
 import zlib
 import run_store
+import audio_semantics
+from openai_credit_meter import CreditBudgetError
 from array import array
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -961,7 +963,31 @@ def detailed_match(
         "confidence": round(confidence, 4),
         "a_sample_ranges": compress_ranges(covered_a),
         "b_sample_ranges": compress_ranges(covered_b),
+        # Preserve paired segments. Independent coverage unions cannot recover
+        # alignment when a compilation reorders clips or contains gaps.
+        "aligned_ranges": aligned_time_ranges(chosen, a, b, interval, left.duration, right.duration),
     }
+
+
+def aligned_time_ranges(points, a, b, interval, a_duration, b_duration) -> list[dict]:
+    runs: list[list[tuple[int, int, int]]] = []
+    for point in sorted(points):
+        if runs and point[0] == runs[-1][-1][0] + 1 and point[1] == runs[-1][-1][1] + 1:
+            runs[-1].append(point)
+        else:
+            runs.append([point])
+    result = []
+    for run in runs:
+        first_a, first_b, _ = run[0]
+        last_a, last_b, _ = run[-1]
+        a_start, b_start = a[first_a].timestamp, b[first_b].timestamp
+        seconds = min(a[last_a].timestamp + interval, a_duration) - a_start
+        seconds = min(seconds, min(b[last_b].timestamp + interval, b_duration) - b_start)
+        if seconds > 0:
+            result.append({"a_start_seconds": round(a_start, 3),
+                           "b_start_seconds": round(b_start, 3),
+                           "duration_seconds": round(seconds, 3)})
+    return result
 
 
 def compress_ranges(values: Iterable[int]) -> list[list[int]]:
@@ -2341,6 +2367,8 @@ class WebReviewState:
     save_queue_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     operation_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     apply_status: dict = field(default_factory=lambda: {"state": "idle"}, init=False)
+    audio_reviewer: audio_semantics.AudioReviewer | None = field(default=None, init=False, repr=False)
+    audio_configuration_error: str | None = field(default=None, init=False, repr=False)
 
     def get_apply_status(self) -> dict:
         with self.rescan_lock:
@@ -2356,6 +2384,11 @@ class WebReviewState:
         self.source_files = dict(self.files)
         self.source_matches = list(self.matches)
         self._rebuild_review_data()
+        try:
+            self.audio_reviewer = audio_semantics.AudioReviewer.from_env(self.runs_root / "audio-evidence")
+        except (ValueError, CreditBudgetError, OSError, sqlite3.Error) as exc:
+            # A broken optional feature must not take the local review offline.
+            self.audio_configuration_error = str(exc)
 
     def _rebuild_review_data(self) -> None:
         self.files, duration_matches, self.filtered_short_file_count = filter_short_videos(
@@ -2423,8 +2456,47 @@ class WebReviewState:
                     "fileCount": len(group),
                     "matchCount": len(group_matches),
                     "files": file_payloads,
+                    "audioReviewKey": audio_semantics.group_key(
+                        {file_id: self.files[file_id] for file_id in group}, group_matches, self.interval
+                    ),
                 }
             )
+
+    def audio_availability(self) -> dict:
+        return {"enabled": self.audio_reviewer is not None,
+                "reason": self.audio_configuration_error or (
+                    None if self.audio_reviewer else "Optional audio review is disabled. See README for configuration."),
+                "model": audio_semantics.MODEL,
+                "maxClipPairs": audio_semantics.MAX_REVIEW_CLIPS,
+                "budget": self.audio_reviewer.meter.snapshot() if self.audio_reviewer else None}
+
+    def _audio_group(self, payload: dict) -> tuple[dict[int, dict], list[dict], str]:
+        group_id = payload.get("groupId")
+        if type(group_id) is not int or not 1 <= group_id <= len(self.groups):
+            raise ValueError("Select a valid duplicate set for audio review.")
+        files = {file_id: self.files[file_id] for file_id in self.groups[group_id - 1]}
+        matches = self.group_matches[group_id]
+        key = audio_semantics.group_key(files, matches, self.interval)
+        if payload.get("groupKey") != key:
+            raise ValueError("This duplicate set changed. Refresh before audio review.")
+        return files, matches, key
+
+    @exclusive_review_operation
+    def review_audio(self, payload: dict) -> dict:
+        if self.audio_reviewer is None:
+            raise ValueError(self.audio_configuration_error or "Optional audio review is disabled.")
+        files, matches, _ = self._audio_group(payload)
+        if payload.get("confirmUpload") is not True:
+            raise ValueError("Confirm upload of matched audio clips to OpenAI before audio review.")
+        return self.audio_reviewer.review(files, matches, self.interval)
+
+    @exclusive_review_operation
+    def saved_audio(self, payload: dict) -> dict:
+        files, _, key = self._audio_group(payload)
+        if self.audio_reviewer:
+            for item in files.values():
+                audio_semantics.validate_source(item)
+        return {"result": self.audio_reviewer.saved(key) if self.audio_reviewer else None}
 
     @staticmethod
     def _percentage(value: object, label: str) -> float:
@@ -3472,6 +3544,11 @@ def make_web_review_handler(
                 self.end_headers()
             elif path_value == "/api/session":
                 self._send_json(state.session_payload())
+            elif path_value == "/api/audio-review/availability":
+                try:
+                    self._send_json(state.audio_availability())
+                except (CreditBudgetError, OSError, sqlite3.Error):
+                    self._send_error_json(503, "Audio review budget storage is unavailable.")
             elif path_value == "/api/plans":
                 try:
                     query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
@@ -3534,6 +3611,10 @@ def make_web_review_handler(
                     self._send_json(state.update_settings(payload))
                 elif path_value == "/api/rescan":
                     self._send_json(state.start_rescan(payload), status=202)
+                elif path_value == "/api/audio-review":
+                    self._send_json(state.review_audio(payload))
+                elif path_value == "/api/audio-review/saved":
+                    self._send_json(state.saved_audio(payload))
                 else:
                     self._send_error_json(404, "Not found.")
             except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
@@ -3544,6 +3625,10 @@ def make_web_review_handler(
                 self._send_error_json(404, "Saved plan was not found.")
             except DedupError as exc:
                 self._send_error_json(500, str(exc))
+            except CreditBudgetError as exc:
+                self._send_error_json(409, str(exc))
+            except sqlite3.Error:
+                self._send_error_json(503, "Local review storage is unavailable.")
             except OSError as exc:
                 self._send_error_json(500, f"Could not complete the request: {exc}")
 

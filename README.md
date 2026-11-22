@@ -50,6 +50,118 @@ reports, or plans to a public issue; use a minimized, sanitized reproduction.
 
 Video Dedup is released under the [MIT License](LICENSE).
 
+## Optional official audio review
+
+The browser's **Optional audio difference review** panel adds speech evidence to
+visually matched intervals. It is off by default and scanning remains local.
+Expand the panel and click **Send matched audio for review** to consent to that
+set's audio upload. Only extracted audio clips go to the fixed official OpenAI
+transcription endpoint; videos, file paths and visual frames are not uploaded.
+
+Enable it in the environment used to launch `web-review` (PowerShell example):
+
+```powershell
+$env:VIDEO_DEDUP_AUDIO_REVIEW_ENABLED = "true"
+$env:OPENAI_OFFICIAL_BUDGET_ENABLED = "true"
+$env:OPENAI_OFFICIAL_API_KEY = "<your official OpenAI project key>"
+$env:OPENAI_CREDIT_CYCLE_START = "<actual credit-cycle start, ISO 8601 with timezone>"
+$env:OPENAI_CREDIT_CYCLE_END = "<actual credit-cycle end, ISO 8601 with timezone>"
+$env:OPENAI_CREDIT_LEDGER_PATH = "C:\persistent-state\openai-credits.sqlite3"
+python .\video_dedup.py web-review .\video-dedup-report.json
+```
+
+Use the actual credit period; there is no automatic calendar-month reset. Keep
+the ledger on durable disk. The default allocations are VSDA $30, Deal $25,
+Resume $15 and **Video Dedup $30**, with an aggregate $100 limit. Processes sharing
+a filesystem can use the same absolute ledger path for atomic aggregate
+admission. Independent deployments must retain their allocated project caps;
+separate database files cannot see each other's transactions. Each project must
+have one authoritative durable ledger, including across replicas. Optional
+`OPENAI_CREDIT_TOTAL_USD` / `OPENAI_CREDIT_PROJECT_USD` values can lower these caps,
+but cannot raise them. A cap lowered within a cycle stays lowered on restart.
+
+Before every upload, the server reserves a rounded duration-based maximum. It
+settles reported duration after completion. Missing billing data, interruptions
+and unknown outcomes retain the reservation; the content cache prevents an
+automatic resubmission. At 80% committed spend the UI warns; at 95% this optional
+feature stops admitting new uploads. Cached and local evidence remains usable.
+An API error does not silently release credit or trigger a paid retry. This
+ledger controls this application's admissions, not unrelated traffic billed to
+the same OpenAI account. The provider's invoice remains authoritative.
+
+Audio review uses `gpt-transcribe` at the published $0.0045 per audio minute
+(verified 2026-11-21). The rate is centralized in `audio_semantics.py`; verify it
+before enabling the feature after a provider price change. See the official
+[model documentation](https://developers.openai.com/api/docs/models/gpt-transcribe)
+and [transcription API](https://developers.openai.com/api/reference/resources/audio/subresources/transcriptions/methods/create).
+The dedicated key does not fall back to `OPENAI_API_KEY`, and a generic
+`OPENAI_BASE_URL` cannot redirect these uploads.
+
+### What the evidence means
+
+- A new scan stores paired time intervals, including offsets in compilations.
+  Older reports need a rescan; separate visual coverage unions are not sufficient
+  to align audio safely.
+- FFmpeg first checks for absent audio, silence, or identical decoded mono
+  samples. These cases use no API credit. File size and modification time must
+  still match the scan before and after extraction.
+- Other intervals are split into clips of at most 60 seconds. A review checks
+  at most 12 clip pairs. Longer sets are explicitly marked partial; listen to
+  unchecked intervals separately. Repeating the action reuses transcripts by
+  decoded audio content, model and extraction version, even after a rename.
+- Speech wording and detected languages are comparison hints. Similar words can
+  accompany different voices, music or effects. Short/absent speech is
+  inconclusive. Mono downmixing cannot establish stereo soundtrack equivalence.
+  This implementation does not claim to classify music or prove semantic
+  equivalence between translations.
+- Audio evidence never changes keeper choices, coverage calculations, saved
+  plans, quarantine or permanent deletion. Review these decisions yourself.
+
+The local `runs/audio-evidence/` directory contains transcript cache entries and
+per-set evidence JSON. Treat transcripts as private media data. Keep the durable
+credit ledger when clearing evidence; deleting it would erase admission history.
+
+To reconcile an interrupted request or a transcript with missing usage, first
+stop every review process using the evidence cache, and verify the actual charge
+with the provider. Keep the same ledger path and credit-period environment used
+for that request. From the project directory, inspect the affected cache entries:
+
+```powershell
+@'
+import sqlite3
+from pathlib import Path
+root = Path("runs/audio-evidence")  # use the evidence directory for your report
+with sqlite3.connect(root / "transcripts.sqlite3") as db:
+    for key, state, reservation in db.execute("SELECT id, state, reservation FROM transcripts"):
+        print(key, state, reservation)
+'@ | python -
+```
+
+Choose the cache key and the provider-verified charge, then run the following
+with the placeholders replaced. A charge of zero is appropriate only when the
+provider confirms no charge. `confirm_stopped=True` is required to recover a
+`pending` entry, since an active request could otherwise be submitted twice.
+
+```powershell
+@'
+from pathlib import Path
+from audio_semantics import AudioReviewer
+from openai_credit_meter import usd_micros
+reviewer = AudioReviewer.from_env(Path("runs/audio-evidence"))
+reviewer.reconcile_transcription("<cache key>", usd_micros("<verified USD charge>"), confirm_stopped=True)
+'@ | python -
+```
+
+Reconciliation records the charge and preserves its ledger history. An
+uncertain entry is then eligible for a new upload only after another explicit
+review click. A cached transcript whose billing was held remains cached; review
+the set again to refresh its displayed accounting. If the charge is still
+unknown, leave the entry and hold in place. There is no automatic paid retry.
+
+For a browser smoke test against a running local review, use
+`pnpm -C review-ui test:audio -- http://127.0.0.1:8765/`. Its audio endpoints
+are mocked and it makes no paid requests.
+
 ## Typical workflow
 
 For one-command startup with the default `video-dedup-report.json` and
