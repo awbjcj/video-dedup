@@ -10,7 +10,7 @@ import type {
   Strategy,
 } from '@/types'
 
-async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
+export async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     ...options,
     headers: {

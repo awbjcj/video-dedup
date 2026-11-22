@@ -20,6 +20,7 @@ export type DuplicateRange = {
 }
 
 export type DuplicateGroup = {
+  audioReviewKey?: string
   id: number
   fileCount: number
   matchCount: number

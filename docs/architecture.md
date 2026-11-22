@@ -86,6 +86,36 @@ Automatic strategies require the remaining keepers to meet the configured
 minimum deletion coverage and never plan removal of the final file in a set.
 Saving a plan does not move or delete files.
 
+### Optional audio evidence boundary
+
+`audio_semantics.py` is a separate advisory service. The scan now retains
+one-to-one `aligned_ranges` from actual matching sample pairs. Discontinuous or
+reordered runs remain separate. Audio review does not reconstruct alignment
+from independent coverage unions or extend normalized edge coverage. Existing
+coverage and deletion algorithms continue to use their original fields.
+
+The web action validates the current group fingerprint and explicit upload
+consent, then holds the existing operation lock while extracting and comparing
+bounded clips. It cannot race a rescan, move or apply operation. The input file
+IDs and paths come from server-side report data. Local stat validation rejects
+changed files. Legacy reports without paired ranges are shown as unavailable.
+
+Decoded PCM hashes key the SQLite transcription cache. A transaction claims a
+cache entry before reserving official credit; simultaneous consumers cannot
+upload the same content twice. An uncertain request leaves both a cache marker
+and a held ledger reservation. Successful transcript evidence can be cached even
+when billing usage is missing; the associated credit remains held. The cache
+stores spoken content locally and is never added to review plans.
+
+`openai_credit_meter.py` is a dependency-free shared implementation of atomic
+pre-request reservations, explicit non-overlapping credit periods, project and
+aggregate caps, settlement and unknown-charge retention. Its 16-thread admission
+tests exercise real SQLite contention. The API transport fixes the official
+endpoint, refuses redirects and has no automatic retry. No provider call occurs
+when the feature is disabled, missing a dedicated key, missing a credit period,
+or unable to reserve enough credit. See README for deployment assumptions and
+the distinction between admission limits and provider billing.
+
 ## Apply: explicit, validated mutation
 
 Apply is the only command that changes media files. Before it acts on every
