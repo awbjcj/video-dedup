@@ -14,6 +14,7 @@ import io
 import json
 import math
 import os
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -169,6 +170,27 @@ def compare_text(left: dict, right: dict) -> dict:
                        if similarity >= 0.85 else "Transcript wording differs; verify by listening.")}
 
 
+def _dotenv_api_key(path: Path) -> str:
+    """Read only OPENAI_API_KEY, without executing or exporting the file."""
+    try:
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
+    except FileNotFoundError:
+        return ""
+    key = ""
+    for line in lines:
+        name, separator, value = line.partition("=")
+        if not separator or name.strip().removeprefix("export ").strip() != "OPENAI_API_KEY":
+            continue
+        try:
+            parts = shlex.split(value, comments=True, posix=True)
+        except ValueError:
+            raise AudioReviewError("Invalid OPENAI_API_KEY in .env.") from None
+        if len(parts) > 1:
+            raise AudioReviewError("Invalid OPENAI_API_KEY in .env.")
+        key = parts[0].strip() if parts else ""
+    return key
+
+
 class AudioReviewer:
     def __init__(self, root: Path, meter: OpenAICreditMeter, api_key: str,
                  *, transcribe=official_transcribe, extract=extract_clip):
@@ -190,7 +212,7 @@ class AudioReviewer:
             db.close()
 
     @classmethod
-    def from_env(cls, root: Path):
+    def from_env(cls, root: Path, *, env_file: Path | None = None):
         enabled = os.environ.get("VIDEO_DEDUP_AUDIO_REVIEW_ENABLED", "false").strip().lower()
         if enabled in {"false", "0", "no", "off", ""}:
             return None
@@ -199,9 +221,11 @@ class AudioReviewer:
         meter = OpenAICreditMeter.from_env("video")
         if meter is None:
             raise AudioReviewError("Audio review requires OPENAI_OFFICIAL_BUDGET_ENABLED=true and a credit period.")
-        key = os.environ.get("OPENAI_OFFICIAL_API_KEY", "").strip()
+        key = (_dotenv_api_key(env_file if env_file is not None else Path(__file__).resolve().parent / ".env")
+               or os.environ.get("OPENAI_API_KEY", "").strip()
+               or os.environ.get("OPENAI_OFFICIAL_API_KEY", "").strip())
         if not key:
-            raise AudioReviewError("Set OPENAI_OFFICIAL_API_KEY to enable official audio review.")
+            raise AudioReviewError("Set OPENAI_API_KEY in .env or the environment to enable official audio review.")
         return cls(root, meter, key)
 
     def _transcript(self, clip: AudioClip) -> dict:

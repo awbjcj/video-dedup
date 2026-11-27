@@ -4,6 +4,7 @@ import concurrent.futures
 import http.client
 import io
 import json
+import os
 import shutil
 import struct
 import subprocess
@@ -224,13 +225,43 @@ class AudioReviewTests(unittest.TestCase):
                                     {"text": "bonjour le monde francais", "languages": ["fr"]})
         self.assertEqual(result["status"], "different_language")
 
-    def test_opt_in_requires_dedicated_credentials_and_budget(self):
+    def test_opt_in_requires_credentials_and_budget(self):
         with mock.patch.dict("os.environ", {}, clear=True):
             self.assertIsNone(audio.AudioReviewer.from_env(self.root))
         with mock.patch.dict("os.environ", {"VIDEO_DEDUP_AUDIO_REVIEW_ENABLED": "true",
                                             "OPENAI_API_KEY": "generic"}, clear=True):
             with self.assertRaises(audio.AudioReviewError):
                 audio.AudioReviewer.from_env(self.root)
+        with mock.patch.dict("os.environ", {"VIDEO_DEDUP_AUDIO_REVIEW_ENABLED": "true",
+                "OPENAI_OFFICIAL_BUDGET_ENABLED": "true",
+                "OPENAI_CREDIT_CYCLE_START": "2026-11-10T00:00:00Z",
+                "OPENAI_CREDIT_CYCLE_END": "2026-12-10T00:00:00Z",
+                "OPENAI_CREDIT_LEDGER_PATH": str(self.root / "no-key.sqlite3")}, clear=True):
+            with self.assertRaisesRegex(audio.AudioReviewError, "Set OPENAI_API_KEY"):
+                audio.AudioReviewer.from_env(self.root, env_file=self.root / "missing.env")
+
+    def test_api_key_from_dotenv_takes_precedence_without_exporting_other_values(self):
+        env_file = self.root / ".env"
+        env_file.write_text("# local settings\nexport OPENAI_API_KEY='file-key' # comment\nUNRELATED=value\n", encoding="utf-8")
+        settings = {"VIDEO_DEDUP_AUDIO_REVIEW_ENABLED": "true", "OPENAI_OFFICIAL_BUDGET_ENABLED": "true",
+                    "OPENAI_CREDIT_CYCLE_START": "2026-11-10T00:00:00Z", "OPENAI_CREDIT_CYCLE_END": "2026-12-10T00:00:00Z",
+                    "OPENAI_CREDIT_LEDGER_PATH": str(self.root / "from-env.sqlite3"),
+                    "OPENAI_API_KEY": "environment-key", "OPENAI_OFFICIAL_API_KEY": "legacy-key"}
+        with mock.patch.dict("os.environ", settings, clear=True):
+            reviewer = audio.AudioReviewer.from_env(self.root / "dotenv-evidence", env_file=env_file)
+            self.assertEqual(reviewer.api_key, "file-key")
+            self.assertNotIn("UNRELATED", os.environ)
+            env_file.unlink()
+            self.assertEqual(audio.AudioReviewer.from_env(self.root / "env-evidence", env_file=env_file).api_key, "environment-key")
+            del os.environ["OPENAI_API_KEY"]
+            self.assertEqual(audio.AudioReviewer.from_env(self.root / "legacy-evidence", env_file=env_file).api_key, "legacy-key")
+
+    def test_invalid_dotenv_key_fails_without_exposing_its_value(self):
+        env_file = self.root / ".env"
+        env_file.write_text("OPENAI_API_KEY='secret-unclosed\n", encoding="utf-8")
+        with self.assertRaises(audio.AudioReviewError) as error:
+            audio._dotenv_api_key(env_file)
+        self.assertNotIn("secret-unclosed", str(error.exception))
 
     def test_web_action_requires_consent_current_group_and_does_not_change_decisions(self):
         with mock.patch.dict("os.environ", {}, clear=True):

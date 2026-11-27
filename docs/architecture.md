@@ -112,7 +112,7 @@ pre-request reservations, explicit non-overlapping credit periods, project and
 aggregate caps, settlement and unknown-charge retention. Its 16-thread admission
 tests exercise real SQLite contention. The API transport fixes the official
 endpoint, refuses redirects and has no automatic retry. No provider call occurs
-when the feature is disabled, missing a dedicated key, missing a credit period,
+when the feature is disabled, missing an API key, missing a credit period,
 or unable to reserve enough credit. See README for deployment assumptions and
 the distinction between admission limits and provider billing.
 

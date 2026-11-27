@@ -58,12 +58,18 @@ Expand the panel and click **Send matched audio for review** to consent to that
 set's audio upload. Only extracted audio clips go to the fixed official OpenAI
 transcription endpoint; videos, file paths and visual frames are not uploaded.
 
-Enable it in the environment used to launch `web-review` (PowerShell example):
+Copy `.env.example` to `.env` if needed and set `OPENAI_API_KEY` in that file.
+The `.env` file is ignored by Git. The key in this project-local file takes
+precedence over `OPENAI_API_KEY` in the process environment; the previous
+`OPENAI_OFFICIAL_API_KEY` environment variable remains a fallback. No other
+values are loaded from `.env`.
+
+Enable the feature and configure the credit period in the environment used to
+launch `web-review` (PowerShell example):
 
 ```powershell
 $env:VIDEO_DEDUP_AUDIO_REVIEW_ENABLED = "true"
 $env:OPENAI_OFFICIAL_BUDGET_ENABLED = "true"
-$env:OPENAI_OFFICIAL_API_KEY = "<your official OpenAI project key>"
 $env:OPENAI_CREDIT_CYCLE_START = "<actual credit-cycle start, ISO 8601 with timezone>"
 $env:OPENAI_CREDIT_CYCLE_END = "<actual credit-cycle end, ISO 8601 with timezone>"
 $env:OPENAI_CREDIT_LEDGER_PATH = "C:\persistent-state\openai-credits.sqlite3"
@@ -94,8 +100,8 @@ Audio review uses `gpt-transcribe` at the published $0.0045 per audio minute
 before enabling the feature after a provider price change. See the official
 [model documentation](https://developers.openai.com/api/docs/models/gpt-transcribe)
 and [transcription API](https://developers.openai.com/api/reference/resources/audio/subresources/transcriptions/methods/create).
-The dedicated key does not fall back to `OPENAI_API_KEY`, and a generic
-`OPENAI_BASE_URL` cannot redirect these uploads.
+The API key is sent only to the official endpoint; a generic `OPENAI_BASE_URL`
+cannot redirect these uploads.
 
 ### What the evidence means
 
